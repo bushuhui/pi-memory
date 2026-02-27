@@ -1,10 +1,12 @@
 /**
  * Knowledge Base Indexer
  * Scans directories, extracts content, chunks, and indexes into LanceDB
+ * Supports incremental indexing based on mtime + content hash
  */
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, extname, basename, relative } from "node:path";
+import { createHash } from "node:crypto";
 import type { KnowledgeStore } from "./knowledge-store.js";
 import type { Embedder } from "./embedder.js";
 
@@ -33,15 +35,26 @@ export class KnowledgeIndexer {
   async indexAll(progressCallback?: (status: string) => void): Promise<void> {
     const report = progressCallback || (() => {});
 
+    let totalScanned = 0;
+    let totalIndexed = 0;
+    let totalSkipped = 0;
+
     for (const rootPath of this.rootPaths) {
       report(`Scanning: ${rootPath}`);
       const files = await this.scanDirectory(rootPath);
       report(`Found ${files.length} files in ${rootPath}`);
+      totalScanned += files.length;
 
       for (const filePath of files) {
         try {
-          await this.indexFile(filePath, rootPath);
-          report(`Indexed: ${relative(rootPath, filePath)}`);
+          const skipped = await this.indexFile(filePath, rootPath);
+          if (skipped) {
+            totalSkipped++;
+            report(`Skipped (unchanged): ${relative(rootPath, filePath)}`);
+          } else {
+            totalIndexed++;
+            report(`Indexed: ${relative(rootPath, filePath)}`);
+          }
         } catch (err) {
           report(`Error indexing ${filePath}: ${err}`);
         }
@@ -49,26 +62,41 @@ export class KnowledgeIndexer {
     }
 
     const totalChunks = await this.store.countChunks();
-    report(`Indexing complete. Total chunks: ${totalChunks}`);
+    report(
+      `Indexing complete. Scanned: ${totalScanned}, Indexed: ${totalIndexed}, Skipped: ${totalSkipped}, Total chunks: ${totalChunks}`
+    );
   }
 
   /**
-   * Index a single file (re-index if already exists)
+   * Index a single file (skip if unchanged based on mtime + hash)
+   * @returns true if skipped, false if indexed
    */
-  async indexFile(filePath: string, rootPath: string): Promise<void> {
+  async indexFile(filePath: string, rootPath: string): Promise<boolean> {
+    // Get file stats and content
+    const stats = await stat(filePath);
+    const content = await readFile(filePath, "utf-8");
+    const contentHash = createHash("sha256").update(content).digest("hex");
+
+    // Check if file needs re-indexing
+    const existing = await this.store.getFileMetadata(filePath);
+    if (existing) {
+      const mtimeMs = Math.floor(stats.mtimeMs);
+      if (existing.mtime === mtimeMs && existing.hash === contentHash) {
+        return true; // Skip unchanged file
+      }
+    }
+
     // Delete existing chunks for this file
     await this.store.deleteByFilePath(filePath);
 
-    // Read and chunk content
-    const content = await readFile(filePath, "utf-8");
+    // Chunk content
     const chunks = this.chunkText(content);
-
-    if (chunks.length === 0) return;
+    if (chunks.length === 0) return false;
 
     // Generate embeddings
     const embeddings = await this.embedder.embedBatch(chunks);
 
-    // Prepare records
+    // Prepare records with mtime and hash
     const records = chunks.map((text, idx) => ({
       text,
       vector: embeddings[idx],
@@ -77,9 +105,12 @@ export class KnowledgeIndexer {
       fileType: extname(filePath).slice(1),
       chunkIndex: idx,
       timestamp: Date.now(),
+      fileMtime: Math.floor(stats.mtimeMs),
+      fileHash: contentHash,
     }));
 
     await this.store.addChunks(records);
+    return false; // Indexed
   }
 
   /**

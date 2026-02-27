@@ -20,6 +20,8 @@ export interface KnowledgeChunk {
   fileType: string;
   chunkIndex: number;
   timestamp: number;
+  fileMtime?: number; // File modification time (ms since epoch)
+  fileHash?: string; // Content hash for change detection
   metadata?: string; // JSON string for extensible metadata (headings, tags, etc.)
 }
 
@@ -76,6 +78,8 @@ export class KnowledgeStore {
           fileType: "txt",
           chunkIndex: 0,
           timestamp: Date.now(),
+          fileMtime: 0,
+          fileHash: "",
         },
       ];
       this.table = await this.db.createTable(TABLE_NAME, emptyData, {
@@ -204,5 +208,34 @@ export class KnowledgeStore {
       filePath,
       chunkCount,
     }));
+  }
+
+  /**
+   * Get file metadata (mtime + hash) for incremental indexing
+   */
+  async getFileMetadata(
+    filePath: string
+  ): Promise<{ mtime: number; hash: string } | null> {
+    await this.init();
+    if (!this.table) return null;
+
+    try {
+      const escapedPath = filePath.replace(/'/g, "''");
+      const results = await this.table
+        .filter(`filePath = '${escapedPath}'`)
+        .limit(1)
+        .toArray();
+
+      if (results.length === 0) return null;
+
+      const chunk = results[0] as any;
+      return {
+        mtime: chunk.fileMtime || 0,
+        hash: chunk.fileHash || "",
+      };
+    } catch (err) {
+      console.warn(`[knowledge-store] getFileMetadata failed: ${err}`);
+      return null;
+    }
   }
 }
