@@ -143,23 +143,31 @@ export class KnowledgeStore {
       .limit(limit)
       .toArray();
 
-    return results.map((r: any) => ({
-      chunk: {
-        id: r.id,
-        text: r.text,
-        vector: r.vector,
-        filePath: r.filePath,
-        fileName: r.fileName,
-        fileType: r.fileType,
-        chunkIndex: r.chunkIndex,
-        timestamp: r.timestamp,
-        metadata: r.metadata,
-      },
-      score: r._distance ?? 0,
-    }));
+    return results.map((r: any) => {
+      // Convert L2 distance to 0-1 similarity score (same as MemoryStore)
+      const distance = r._distance ?? 0;
+      const score = 1 / (1 + distance);
+
+      return {
+        chunk: {
+          id: r.id,
+          text: r.text,
+          vector: r.vector,
+          filePath: r.filePath,
+          fileName: r.fileName,
+          fileType: r.fileType,
+          chunkIndex: r.chunkIndex,
+          timestamp: r.timestamp,
+          fileMtime: r.fileMtime,
+          fileHash: r.fileHash,
+          metadata: r.metadata,
+        },
+        score,
+      };
+    });
   }
 
-  async ftsSearch(query: string, limit: number = 20): Promise<KnowledgeChunk[]> {
+  async ftsSearch(query: string, limit: number = 20): Promise<KnowledgeSearchResult[]> {
     await this.init();
     if (!this.table) throw new Error("Table not initialized");
 
@@ -169,17 +177,28 @@ export class KnowledgeStore {
         .limit(limit)
         .toArray();
 
-      return results.map((r: any) => ({
-        id: r.id,
-        text: r.text,
-        vector: r.vector,
-        filePath: r.filePath,
-        fileName: r.fileName,
-        fileType: r.fileType,
-        chunkIndex: r.chunkIndex,
-        timestamp: r.timestamp,
-        metadata: r.metadata,
-      }));
+      return results.map((r: any, index: number) => {
+        // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
+        const rawScore = typeof r._score === "number" ? r._score : 0;
+        const normalizedScore = rawScore > 0 ? 1 / (1 + Math.exp(-rawScore / 10)) : 0.5;
+
+        return {
+          chunk: {
+            id: r.id,
+            text: r.text,
+            vector: r.vector,
+            filePath: r.filePath,
+            fileName: r.fileName,
+            fileType: r.fileType,
+            chunkIndex: r.chunkIndex,
+            timestamp: r.timestamp,
+            fileMtime: r.fileMtime,
+            fileHash: r.fileHash,
+            metadata: r.metadata,
+          },
+          score: normalizedScore,
+        };
+      });
     } catch (err) {
       console.warn(`[knowledge-store] FTS search failed: ${err}`);
       return [];

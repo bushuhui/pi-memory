@@ -383,6 +383,10 @@ const memoryLanceDBProPlugin = {
         store: knowledgeStore,
         indexer,
         embedder,
+        retrievalConfig: {
+          ...DEFAULT_RETRIEVAL_CONFIG,
+          ...config.retrieval,
+        },
       });
 
       console.log(`[knowledge] tools registered for ${knowledgePaths.length} path(s)`);
