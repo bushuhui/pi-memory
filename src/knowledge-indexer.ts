@@ -45,25 +45,31 @@ export class KnowledgeIndexer {
       report(`Found ${files.length} files in ${rootPath}`);
       totalScanned += files.length;
 
-      for (const filePath of files) {
+      const startTime = Date.now();
+
+      for (let i = 0; i < files.length; i++) {
+        const filePath = files[i];
+        const progress = `[${i + 1}/${files.length}]`;
         try {
           const skipped = await this.indexFile(filePath, rootPath);
           if (skipped) {
             totalSkipped++;
-            report(`Skipped (unchanged): ${relative(rootPath, filePath)}`);
           } else {
             totalIndexed++;
-            report(`Indexed: ${relative(rootPath, filePath)}`);
+            report(`${progress} Indexed: ${relative(rootPath, filePath)}`);
           }
         } catch (err) {
-          report(`Error indexing ${filePath}: ${err}`);
+          report(`${progress} Error: ${relative(rootPath, filePath)} — ${err}`);
         }
       }
+
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      report(`Finished ${rootPath} in ${elapsed}s`);
     }
 
     const totalChunks = await this.store.countChunks();
     report(
-      `Indexing complete. Scanned: ${totalScanned}, Indexed: ${totalIndexed}, Skipped: ${totalSkipped}, Total chunks: ${totalChunks}`
+      `\nIndexing complete. Scanned: ${totalScanned}, Indexed: ${totalIndexed}, Skipped: ${totalSkipped}, Total chunks: ${totalChunks}`
     );
   }
 
