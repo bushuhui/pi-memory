@@ -7,6 +7,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 
 // Import core components
 import { MemoryStore } from "./src/store.js";
@@ -87,6 +88,20 @@ function resolveEnvVars(value: string): string {
     }
     return envValue;
   });
+}
+
+function parsePositiveInt(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const s = value.trim();
+    if (!s) return undefined;
+    const resolved = resolveEnvVars(s);
+    const n = Number(resolved);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return undefined;
 }
 
 // ============================================================================
@@ -259,6 +274,20 @@ async function findPreviousSessionFile(sessionsDir: string, currentSessionFile?:
 }
 
 // ============================================================================
+// Version
+// ============================================================================
+
+function getPluginVersion(): string {
+  try {
+    const pkgUrl = new URL("./package.json", import.meta.url);
+    const pkg = JSON.parse(readFileSync(pkgUrl, "utf8")) as { version?: string };
+    return pkg.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -310,8 +339,10 @@ const memoryLanceDBProPlugin = {
     const scopeManager = createScopeManager(config.scopes);
     const migrator = createMigrator(store);
 
+    const pluginVersion = getPluginVersion();
+
     api.logger.info(
-      `memory-lancedb-pro: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"})`
+      `memory-lancedb-pro@${pluginVersion}: plugin registered (db: ${resolvedDbPath}, model: ${config.embedding.model || "text-embedding-3-small"})`
     );
 
     // ========================================================================
@@ -369,7 +400,7 @@ const memoryLanceDBProPlugin = {
         migrator,
         embedder,
       }),
-      { commands: ["memory"] }
+      { commands: ["memory-pro"] }
     );
 
     // ========================================================================
@@ -378,14 +409,14 @@ const memoryLanceDBProPlugin = {
 
     // Auto-recall: inject relevant memories before agent starts
     if (config.autoRecall !== false) {
-      api.on("before_agent_start", async (event) => {
+      api.on("before_agent_start", async (event, ctx) => {
         if (!event.prompt || shouldSkipRetrieval(event.prompt)) {
           return;
         }
 
         try {
           // Determine agent ID and accessible scopes
-          const agentId = event.agentId || "main";
+          const agentId = ctx?.agentId || "main";
           const accessibleScopes = scopeManager.getAccessibleScopes(agentId);
 
           const results = await retriever.retrieve({
@@ -422,14 +453,14 @@ const memoryLanceDBProPlugin = {
 
     // Auto-capture: analyze and store important information after agent ends
     if (config.autoCapture !== false) {
-      api.on("agent_end", async (event) => {
+      api.on("agent_end", async (event, ctx) => {
         if (!event.success || !event.messages || event.messages.length === 0) {
           return;
         }
 
         try {
           // Determine agent ID and default scope
-          const agentId = event.agentId || "main";
+          const agentId = ctx?.agentId || "main";
           const defaultScope = scopeManager.getDefaultScope(agentId);
 
           // Extract text content from messages
@@ -716,7 +747,9 @@ function parsePluginConfig(value: unknown): PluginConfig {
         apiKey,
         model: typeof embedding.model === "string" ? embedding.model : "text-embedding-3-small",
         baseURL: typeof embedding.baseURL === "string" ? resolveEnvVars(embedding.baseURL) : undefined,
-        dimensions: typeof embedding.dimensions === "number" ? embedding.dimensions : undefined,
+        // Accept number, numeric string, or env-var string (e.g. "${EMBED_DIM}").
+        // Also accept legacy top-level `dimensions` for convenience.
+        dimensions: parsePositiveInt(embedding.dimensions ?? cfg.dimensions),
         taskQuery: typeof embedding.taskQuery === "string" ? embedding.taskQuery : undefined,
         taskPassage: typeof embedding.taskPassage === "string" ? embedding.taskPassage : undefined,
         normalized: typeof embedding.normalized === "boolean" ? embedding.normalized : undefined,

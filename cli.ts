@@ -3,6 +3,7 @@
  */
 
 import type { Command } from "commander";
+import { readFileSync } from "node:fs";
 import { loadLanceDB, type MemoryEntry, type MemoryStore } from "./src/store.js";
 import type { MemoryRetriever } from "./src/retriever.js";
 import type { MemoryScopeManager } from "./src/scopes.js";
@@ -24,6 +25,21 @@ interface CLIContext {
 // Utility Functions
 // ============================================================================
 
+function getPluginVersion(): string {
+  try {
+    const pkgUrl = new URL("./package.json", import.meta.url);
+    const pkg = JSON.parse(readFileSync(pkgUrl, "utf8")) as { version?: string };
+    return pkg.version || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function clampInt(value: number, min: number, max: number): number {
+  const n = Number.isFinite(value) ? value : min;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
 function formatMemory(memory: any, index?: number): string {
   const prefix = index !== undefined ? `${index + 1}. ` : "";
   const date = new Date(memory.timestamp || memory.createdAt || Date.now()).toISOString().split('T')[0];
@@ -41,8 +57,16 @@ function formatJson(obj: any): string {
 
 export function registerMemoryCLI(program: Command, context: CLIContext): void {
   const memory = program
-    .command("memory")
-    .description("Enhanced memory management commands");
+    .command("memory-pro")
+    .description("Enhanced memory management commands (LanceDB Pro)");
+
+  // Version
+  memory
+    .command("version")
+    .description("Print plugin version")
+    .action(() => {
+      console.log(getPluginVersion());
+    });
 
   // List memories
   memory
@@ -607,5 +631,5 @@ export function registerMemoryCLI(program: Command, context: CLIContext): void {
 // ============================================================================
 
 export function createMemoryCLI(context: CLIContext) {
-  return (program: Command) => registerMemoryCLI(program, context);
+  return ({ program }: { program: Command }) => registerMemoryCLI(program, context);
 }

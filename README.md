@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro
+# 🧠 memory-lancedb-pro · OpenClaw Plugin
 
 **Enhanced Long-Term Memory Plugin for [OpenClaw](https://github.com/openclaw/openclaw)**
 
@@ -161,6 +161,32 @@ Filters out low-quality content at both auto-capture and tool-store stages:
 
 ## Installation
 
+### AI-safe install notes (anti-hallucination)
+
+If you are following this README using an AI assistant, **do not assume defaults**. Always run these commands first and use the real output:
+
+```bash
+openclaw config get agents.defaults.workspace
+openclaw config get plugins.load.paths
+openclaw config get plugins.slots.memory
+openclaw config get plugins.entries.memory-lancedb-pro
+```
+
+Recommendations:
+- Prefer **absolute paths** in `plugins.load.paths` unless you have confirmed the active workspace.
+- If you use `${JINA_API_KEY}` (or any `${...}` variable) in config, ensure the **Gateway service process** has that environment variable (system services often do **not** inherit your interactive shell env).
+- After changing plugin config, run `openclaw gateway restart`.
+
+### Jina API keys (embedding + rerank)
+
+- **Embedding**: set `embedding.apiKey` to your Jina key (recommended: use an env var like `${JINA_API_KEY}`).
+- **Rerank** (when `retrieval.rerankProvider: "jina"`): you can typically use the **same** Jina key for `retrieval.rerankApiKey`.
+- If you use a different rerank provider (`siliconflow`, `pinecone`, etc.), `retrieval.rerankApiKey` should be that provider’s key.
+
+Key storage guidance:
+- Avoid committing secrets into git.
+- Using `${...}` env vars is fine, but make sure the **Gateway service process** has those env vars (system services often do not inherit your interactive shell environment).
+
 ### What is the “OpenClaw workspace”?
 
 In OpenClaw, the **agent workspace** is the agent’s working directory (default: `~/.openclaw/workspace`).
@@ -168,7 +194,9 @@ According to the docs, the workspace is the **default cwd**, and **relative path
 
 > Note: OpenClaw configuration typically lives under `~/.openclaw/openclaw.json` (separate from the workspace).
 
-**Common mistake:** cloning the plugin somewhere else, while keeping `plugins.load.paths: ["plugins/memory-lancedb-pro"]` (a **relative path**). In that case OpenClaw will look for `plugins/memory-lancedb-pro` under your **workspace** and fail to load it.
+**Common mistake:** cloning the plugin somewhere else, while keeping a **relative path** like `plugins.load.paths: ["plugins/memory-lancedb-pro"]`. Relative paths can be resolved against different working directories depending on how the Gateway is started.
+
+To avoid ambiguity, use an **absolute path** (Option B) or clone into `<workspace>/plugins/` (Option A) and keep your config consistent.
 
 ### Option A (recommended): clone into `plugins/` under your workspace
 
@@ -285,7 +313,7 @@ openclaw config get plugins.slots.memory
     "bm25Weight": 0.3,
     "minScore": 0.3,
     "rerank": "cross-encoder",
-    "rerankApiKey": "jina_xxx",
+    "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v2-base-multilingual",
     "rerankEndpoint": "https://api.jina.ai/v1/rerank",
     "rerankProvider": "jina",
@@ -326,7 +354,7 @@ This plugin works with **any OpenAI-compatible embedding API**:
 | **Jina** (recommended) | `jina-embeddings-v5-text-small` | `https://api.jina.ai/v1` | 1024 |
 | **OpenAI** | `text-embedding-3-small` | `https://api.openai.com/v1` | 1536 |
 | **Google Gemini** | `gemini-embedding-001` | `https://generativelanguage.googleapis.com/v1beta/openai/` | 3072 |
-| **Ollama** (local) | `nomic-embed-text` | `http://localhost:11434/v1` | 768 |
+| **Ollama** (local) | `nomic-embed-text` | `http://localhost:11434/v1` | _provider-specific_ (set `embedding.dimensions` to match your Ollama model output) |
 
 ### Rerank Providers
 
@@ -374,35 +402,165 @@ Cross-encoder reranking supports multiple providers via `rerankProvider`:
 
 ---
 
+## Optional: JSONL Session Distillation (Auto-memories from chat logs)
+
+OpenClaw already persists **full session transcripts** as JSONL files:
+
+- `~/.openclaw/agents/<agentId>/sessions/*.jsonl`
+
+This plugin focuses on **high-quality long-term memory**. If you dump raw transcripts into LanceDB, retrieval quality quickly degrades.
+
+Instead, you can run an **hourly distiller** that:
+
+1) Incrementally reads only the **newly appended tail** of each session JSONL (byte-offset cursor)
+2) Filters noise (tool output, injected `<relevant-memories>`, logs, boilerplate)
+3) Uses a dedicated agent to **distill** reusable lessons / rules / preferences into short atomic memories
+4) Stores them via `memory_store` into the right **scope** (`global` or `agent:<agentId>`)
+
+### What you get
+
+- ✅ Fully automatic (cron)
+- ✅ Multi-agent support (main + bots)
+- ✅ No re-reading: cursor ensures the next run only processes new lines
+- ✅ Memory hygiene: quality gate + dedupe + per-run caps
+
+### Script
+
+This repo includes the extractor script:
+
+- `scripts/jsonl_distill.py`
+
+It produces a small **batch JSON** file under:
+
+- `~/.openclaw/state/jsonl-distill/batches/`
+
+and keeps a cursor here:
+
+- `~/.openclaw/state/jsonl-distill/cursor.json`
+
+The script is **safe**: it never modifies session logs.
+
+By default it skips historical reset snapshots (`*.reset.*`) and excludes the distiller agent itself (`memory-distiller`) to prevent self-ingestion loops.
+
+### Recommended setup (dedicated distiller agent)
+
+#### 1) Create a dedicated agent
+
+```bash
+openclaw agents add memory-distiller \
+  --non-interactive \
+  --workspace ~/.openclaw/workspace-memory-distiller \
+  --model openai-codex/gpt-5.2
+```
+
+#### 2) Initialize cursor (Mode A: start from now)
+
+This marks all existing JSONL files as "already read" by setting offsets to EOF.
+
+```bash
+# Set PLUGIN_DIR to where this plugin is installed.
+# - If you cloned into your OpenClaw workspace (recommended):
+#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/memory-lancedb-pro"
+# - Otherwise, check: `openclaw plugins info memory-lancedb-pro` and locate the directory.
+PLUGIN_DIR="/path/to/memory-lancedb-pro"
+
+python3 "$PLUGIN_DIR/scripts/jsonl_distill.py" init
+```
+
+#### 3) Create an hourly cron job (Asia/Shanghai)
+
+Tip: start the message with `run ...` so `memory-lancedb-pro`'s adaptive retrieval will skip auto-recall injection (saves tokens).
+
+```bash
+# IMPORTANT: replace <PLUGIN_DIR> in the template below with your actual plugin path.
+MSG=$(cat <<'EOF'
+run jsonl memory distill
+
+Goal: distill NEW chat content from OpenClaw session JSONL files into high-quality LanceDB memories using memory_store.
+
+Hard rules:
+- Incremental only: call the extractor script; do NOT scan full history.
+- Store only reusable memories; skip routine chatter.
+- English memory text + final line: Keywords (zh): ...
+- < 500 chars, atomic.
+- <= 3 memories per agent per run; <= 3 global per run.
+- Scope: global for broadly reusable; otherwise agent:<agentId>.
+
+Workflow:
+1) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py run
+2) If noop: stop.
+3) Read batchFile (created/pending)
+4) memory_store(...) for selected memories
+5) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py commit --batch-file <batchFile>
+EOF
+)
+
+openclaw cron add \
+  --agent memory-distiller \
+  --name "jsonl-memory-distill (hourly)" \
+  --cron "0 * * * *" \
+  --tz "Asia/Shanghai" \
+  --session isolated \
+  --wake now \
+  --timeout-seconds 420 \
+  --stagger 5m \
+  --no-deliver \
+  --message "$MSG"
+```
+
+#### 4) Debug run
+
+```bash
+openclaw cron run <jobId> --expect-final --timeout 180000
+openclaw cron runs --id <jobId> --limit 5
+```
+
+### Scope strategy (recommended)
+
+When distilling **all agents**, always set `scope` explicitly when calling `memory_store`:
+
+- Broadly reusable → `scope=global`
+- Agent-specific → `scope=agent:<agentId>`
+
+This prevents cross-bot memory pollution.
+
+### Rollback
+
+- Disable/remove cron job: `openclaw cron disable <jobId>` / `openclaw cron rm <jobId>`
+- Delete agent: `openclaw agents delete memory-distiller`
+- Remove cursor state: `rm -rf ~/.openclaw/state/jsonl-distill/`
+
+---
+
 ## CLI Commands
 
 ```bash
 # List memories
-openclaw memory list [--scope global] [--category fact] [--limit 20] [--json]
+openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
 
 # Search memories
-openclaw memory search "query" [--scope global] [--limit 10] [--json]
+openclaw memory-pro search "query" [--scope global] [--limit 10] [--json]
 
 # View statistics
-openclaw memory stats [--scope global] [--json]
+openclaw memory-pro stats [--scope global] [--json]
 
 # Delete a memory by ID (supports 8+ char prefix)
-openclaw memory delete <id>
+openclaw memory-pro delete <id>
 
 # Bulk delete with filters
-openclaw memory delete-bulk --scope global [--before 2025-01-01] [--dry-run]
+openclaw memory-pro delete-bulk --scope global [--before 2025-01-01] [--dry-run]
 
 # Export / Import
-openclaw memory export [--scope global] [--output memories.json]
-openclaw memory import memories.json [--scope global] [--dry-run]
+openclaw memory-pro export [--scope global] [--output memories.json]
+openclaw memory-pro import memories.json [--scope global] [--dry-run]
 
 # Re-embed all entries with a new model
-openclaw memory reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
+openclaw memory-pro reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
 
 # Migrate from built-in memory-lancedb
-openclaw memory migrate check [--source /path]
-openclaw memory migrate run [--source /path] [--dry-run] [--skip-existing]
-openclaw memory migrate verify [--source /path]
+openclaw memory-pro migrate check [--source /path]
+openclaw memory-pro migrate run [--source /path] [--dry-run] [--skip-existing]
+openclaw memory-pro migrate verify [--source /path]
 ```
 
 ---

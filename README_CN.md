@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro
+# 🧠 memory-lancedb-pro · OpenClaw Plugin
 
 **[OpenClaw](https://github.com/openclaw/openclaw) 增强型 LanceDB 长期记忆插件**
 
@@ -162,6 +162,32 @@ Query → BM25 FTS ─────┘
 
 ## 安装
 
+### AI 安装指引（防幻觉版）
+
+如果你是用 AI 按 README 操作，**不要假设任何默认值**。请先运行以下命令，并以真实输出为准：
+
+```bash
+openclaw config get agents.defaults.workspace
+openclaw config get plugins.load.paths
+openclaw config get plugins.slots.memory
+openclaw config get plugins.entries.memory-lancedb-pro
+```
+
+建议：
+- `plugins.load.paths` 建议优先用**绝对路径**（除非你已确认当前 workspace）。
+- 如果配置里使用 `${JINA_API_KEY}`（或任何 `${...}` 变量），务必确保运行 Gateway 的**服务进程环境**里真的有这些变量（systemd/launchd/docker 通常不会继承你终端的 export）。
+- 修改插件配置后，运行 `openclaw gateway restart` 使其生效。
+
+### Jina API Key（Embedding + Rerank）如何填写
+
+- **Embedding**：将 `embedding.apiKey` 设置为你的 Jina key（推荐用环境变量 `${JINA_API_KEY}`）。
+- **Rerank**（当 `retrieval.rerankProvider: "jina"`）：通常可以直接复用同一个 Jina key，填到 `retrieval.rerankApiKey`。
+- 如果你选择了其它 rerank provider（如 `siliconflow` / `pinecone`），则 `retrieval.rerankApiKey` 应填写对应提供商的 key。
+
+Key 存储建议：
+- 不要把 key 提交到 git。
+- 使用 `${...}` 环境变量没问题，但务必确保运行 Gateway 的**服务进程环境**里真的有该变量（systemd/launchd/docker 往往不会继承你终端的 export）。
+
 ### 什么是 “OpenClaw workspace”？
 
 在 OpenClaw 中，**agent workspace（工作区）** 是 Agent 的工作目录（默认：`~/.openclaw/workspace`）。
@@ -169,7 +195,9 @@ Query → BM25 FTS ─────┘
 
 > 说明：OpenClaw 的配置文件通常在 `~/.openclaw/openclaw.json`，与 workspace 是分开的。
 
-**最常见的安装错误：** 把插件 clone 到别的目录，但在配置里仍然写 `"paths": ["plugins/memory-lancedb-pro"]`（这是**相对路径**）。OpenClaw 会去 workspace 下找 `plugins/memory-lancedb-pro`，导致加载失败，于是出现“安装位置不对”的反馈。
+**最常见的安装错误：** 把插件 clone 到别的目录，但在配置里仍然写类似 `"paths": ["plugins/memory-lancedb-pro"]` 的**相对路径**。相对路径的解析基准会受 Gateway 启动方式/工作目录影响，容易指向错误位置。
+
+为避免歧义：建议用**绝对路径**（方案 B），或把插件放在 `<workspace>/plugins/`（方案 A）并保持配置一致。
 
 ### 方案 A（推荐）：克隆到 workspace 的 `plugins/` 目录下
 
@@ -286,7 +314,7 @@ openclaw config get plugins.slots.memory
     "bm25Weight": 0.3,
     "minScore": 0.3,
     "rerank": "cross-encoder",
-    "rerankApiKey": "jina_xxx",
+    "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v2-base-multilingual",
     "candidatePoolSize": 20,
     "recencyHalfLifeDays": 14,
@@ -325,7 +353,117 @@ openclaw config get plugins.slots.memory
 | **Jina**（推荐） | `jina-embeddings-v5-text-small` | `https://api.jina.ai/v1` | 1024 |
 | **OpenAI** | `text-embedding-3-small` | `https://api.openai.com/v1` | 1536 |
 | **Google Gemini** | `gemini-embedding-001` | `https://generativelanguage.googleapis.com/v1beta/openai/` | 3072 |
-| **Ollama**（本地） | `nomic-embed-text` | `http://localhost:11434/v1` | 768 |
+| **Ollama**（本地） | `nomic-embed-text` | `http://localhost:11434/v1` | _与本地模型输出一致_（建议显式设置 `embedding.dimensions`） |
+
+---
+
+## （可选）从 Session JSONL 自动蒸馏记忆（全自动）
+
+OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
+
+- `~/.openclaw/agents/<agentId>/sessions/*.jsonl`
+
+但 JSONL 含大量噪声（tool 输出、系统块、重复回调等），**不建议直接把原文塞进 LanceDB**。
+
+本插件提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现“增量蒸馏 → 高质量记忆入库”：
+
+- 只读取每个 JSONL 文件**新增尾巴**（byte offset cursor），避免重复和 token 浪费
+- 生成一个小型 batch JSON
+- 由 distiller agent 把 batch 蒸馏成短、原子、可复用的记忆，再用 `memory_store` 写入
+
+### 你会得到什么
+
+- ✅ 全自动（每小时）
+- ✅ 多 Agent 支持（main + 各 bot）
+- ✅ 只处理新增内容（不回读）
+- ✅ 防自我吞噬：默认排除 `memory-distiller` 自己的 session
+
+### 脚本输出位置
+
+- Cursor：`~/.openclaw/state/jsonl-distill/cursor.json`
+- Batches：`~/.openclaw/state/jsonl-distill/batches/`
+
+> 脚本只读 session JSONL，不会修改原始日志。
+
+### 推荐部署（独立 distiller agent）
+
+#### 1）创建 distiller agent（示例用 gpt-5.2）
+
+```bash
+openclaw agents add memory-distiller \
+  --non-interactive \
+  --workspace ~/.openclaw/workspace-memory-distiller \
+  --model openai-codex/gpt-5.2
+```
+
+#### 2）初始化 cursor（模式 A：从现在开始，不回溯历史）
+
+先确定插件目录（PLUGIN_DIR）：
+
+```bash
+# 如果你按推荐方式 clone 到 workspace：
+#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/memory-lancedb-pro"
+PLUGIN_DIR="/path/to/memory-lancedb-pro"
+
+python3 "$PLUGIN_DIR/scripts/jsonl_distill.py" init
+```
+
+#### 3）创建每小时 Cron（Asia/Shanghai）
+
+建议 cron message 以 `run ...` 开头，这样本插件的自适应检索会跳过自动 recall 注入（节省 token）。
+
+```bash
+MSG=$(cat <<'EOF'
+run jsonl memory distill
+
+Goal: Distill ONLY new content from OpenClaw session JSONL tails into high-quality LanceDB memories.
+
+Hard rules:
+- Incremental only: exec the extractor. Do NOT scan full history.
+- If extractor returns action=noop: stop immediately.
+- Store only reusable memories (rules, pitfalls, decisions, preferences, stable facts). Skip routine chatter.
+- Each memory: idiomatic English + final line `Keywords (zh): ...` (3-8 short phrases).
+- Keep each memory < 500 chars and atomic.
+- Caps: <= 3 memories per agent per run; <= 3 global per run.
+- Scope:
+  - broadly reusable -> global
+  - agent-specific -> agent:<agentId>
+
+Workflow:
+1) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py run
+2) Determine batch file (created/pending)
+3) memory_store(...) for selected memories
+4) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py commit --batch-file <batchFile>
+EOF
+)
+
+openclaw cron add \
+  --agent memory-distiller \
+  --name "jsonl-memory-distill (hourly)" \
+  --cron "0 * * * *" \
+  --tz "Asia/Shanghai" \
+  --session isolated \
+  --wake now \
+  --timeout-seconds 420 \
+  --stagger 5m \
+  --no-deliver \
+  --message "$MSG"
+```
+
+### scope 策略（非常重要）
+
+当蒸馏“所有 agents”时，务必显式设置 scope：
+
+- 跨 agent 通用规则/偏好/坑 → `scope=global`
+- agent 私有 → `scope=agent:<agentId>`
+
+否则不同 bot 的记忆会相互污染。
+
+### 回滚
+
+- 禁用/删除 cron：`openclaw cron disable <jobId>` / `openclaw cron rm <jobId>`
+- 删除 distiller agent：`openclaw agents delete memory-distiller`
+- 删除 cursor 状态：`rm -rf ~/.openclaw/state/jsonl-distill/`
 
 ---
 
@@ -333,31 +471,31 @@ openclaw config get plugins.slots.memory
 
 ```bash
 # 列出记忆
-openclaw memory list [--scope global] [--category fact] [--limit 20] [--json]
+openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
 
 # 搜索记忆
-openclaw memory search "query" [--scope global] [--limit 10] [--json]
+openclaw memory-pro search "query" [--scope global] [--limit 10] [--json]
 
 # 查看统计
-openclaw memory stats [--scope global] [--json]
+openclaw memory-pro stats [--scope global] [--json]
 
 # 按 ID 删除记忆（支持 8+ 字符前缀）
-openclaw memory delete <id>
+openclaw memory-pro delete <id>
 
 # 批量删除
-openclaw memory delete-bulk --scope global [--before 2025-01-01] [--dry-run]
+openclaw memory-pro delete-bulk --scope global [--before 2025-01-01] [--dry-run]
 
 # 导出 / 导入
-openclaw memory export [--scope global] [--output memories.json]
-openclaw memory import memories.json [--scope global] [--dry-run]
+openclaw memory-pro export [--scope global] [--output memories.json]
+openclaw memory-pro import memories.json [--scope global] [--dry-run]
 
 # 使用新模型重新生成 Embedding
-openclaw memory reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
+openclaw memory-pro reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
 
 # 从内置 memory-lancedb 迁移
-openclaw memory migrate check [--source /path]
-openclaw memory migrate run [--source /path] [--dry-run] [--skip-existing]
-openclaw memory migrate verify [--source /path]
+openclaw memory-pro migrate check [--source /path]
+openclaw memory-pro migrate run [--source /path] [--dry-run] [--skip-existing]
+openclaw memory-pro migrate verify [--source /path]
 ```
 
 ---

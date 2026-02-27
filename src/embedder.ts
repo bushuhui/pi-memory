@@ -156,6 +156,9 @@ export class Embedder {
   private readonly _taskPassage?: string;
   private readonly _normalized?: boolean;
 
+  /** Optional requested dimensions to pass through to the embedding provider (OpenAI-compatible). */
+  private readonly _requestDimensions?: number;
+
   constructor(config: EmbeddingConfig) {
     // Resolve environment variables in API key
     const resolvedApiKey = resolveEnvVars(config.apiKey);
@@ -164,6 +167,7 @@ export class Embedder {
     this._taskQuery = config.taskQuery;
     this._taskPassage = config.taskPassage;
     this._normalized = config.normalized;
+    this._requestDimensions = config.dimensions;
 
     this.client = new OpenAI({
       apiKey: resolvedApiKey,
@@ -236,6 +240,13 @@ export class Embedder {
 
     if (task) payload.task = task;
     if (this._normalized !== undefined) payload.normalized = this._normalized;
+
+    // Some OpenAI-compatible providers support requesting a specific vector size.
+    // We only pass it through when explicitly configured to avoid breaking providers
+    // that reject unknown fields.
+    if (this._requestDimensions && this._requestDimensions > 0) {
+      payload.dimensions = this._requestDimensions;
+    }
 
     return payload;
   }
