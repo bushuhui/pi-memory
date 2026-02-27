@@ -118,7 +118,11 @@
           },
           "rerankProvider": {
             "type": "string",
-            "enum": ["jina", "siliconflow", "pinecone"],
+            "enum": [
+              "jina",
+              "siliconflow",
+              "pinecone"
+            ],
             "default": "jina",
             "description": "Reranker provider format. Determines request/response shape and auth header."
           },
@@ -217,6 +221,13 @@
             }
           }
         }
+      },
+      "knowledgePaths": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Directories to index for knowledge search (e.g. Obsidian vault paths)"
       }
     },
     "required": [

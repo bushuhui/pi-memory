@@ -17,6 +17,10 @@ import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
 import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { createMemoryCLI } from "./cli.js";
+import { KnowledgeStore } from "./src/knowledge-store.js";
+import { KnowledgeIndexer } from "./src/knowledge-indexer.js";
+import { registerAllKnowledgeTools } from "./src/knowledge-tools.js";
+import { readFileSync } from "node:fs";
 
 // ============================================================================
 // Configuration & Types
@@ -62,6 +66,8 @@ interface PluginConfig {
   };
   enableManagementTools?: boolean;
   sessionMemory?: { enabled?: boolean; messageCount?: number };
+  /** Directories to index for knowledge search (e.g. Obsidian vault paths) */
+  knowledgePaths?: string[];
 }
 
 // ============================================================================
@@ -266,6 +272,19 @@ const memoryLanceDBProPlugin = {
     // Parse and validate configuration
     const config = parsePluginConfig(api.pluginConfig);
 
+    // Read extraPaths from main OpenClaw config (agents.defaults.memorySearch.extraPaths)
+    let knowledgePaths: string[] = [];
+    try {
+      const configPath = join(homedir(), ".openclaw", "openclaw.json");
+      const mainConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+      const defaults = mainConfig?.agents?.defaults?.memorySearch;
+      const rawPaths = [...(defaults?.extraPaths ?? [])].map((v: any) => String(v).trim()).filter(Boolean);
+      knowledgePaths = Array.from(new Set(rawPaths));
+    } catch (err) {
+      console.log(`[knowledge] failed to read extraPaths from main config: ${err}`);
+    }
+    console.log(`[memory-lancedb-pro] knowledgePaths from extraPaths: ${JSON.stringify(knowledgePaths)}`);
+
     const resolvedDbPath = api.resolvePath(config.dbPath || getDefaultDbPath());
     const vectorDim = getVectorDimensions(
       config.embedding.model || "text-embedding-3-small",
@@ -312,6 +331,31 @@ const memoryLanceDBProPlugin = {
         enableManagementTools: config.enableManagementTools,
       }
     );
+
+    // ========================================================================
+    // Register Knowledge Base Tools
+    // ========================================================================
+
+    if (knowledgePaths.length > 0) {
+      console.log(`[knowledge] initializing with paths: ${knowledgePaths.join(", ")}`);
+      const knowledgeStore = new KnowledgeStore(resolvedDbPath, vectorDim);
+      // Init is async — fire and forget, tools will wait if needed
+      const knowledgeReady = knowledgeStore.init().then(() => {
+        console.log(`[knowledge] store initialized`);
+      }).catch((err) => {
+        console.error(`[knowledge] store init failed: ${err}`);
+      });
+
+      const indexer = new KnowledgeIndexer(knowledgeStore, embedder, knowledgePaths);
+
+      registerAllKnowledgeTools(api, {
+        store: knowledgeStore,
+        indexer,
+        embedder,
+      });
+
+      console.log(`[knowledge] tools registered for ${knowledgePaths.length} path(s)`);
+    }
 
     // ========================================================================
     // Register CLI Commands
@@ -691,6 +735,9 @@ function parsePluginConfig(value: unknown): PluginConfig {
               ? (cfg.sessionMemory as Record<string, unknown>).messageCount as number
               : undefined,
           }
+        : undefined,
+      knowledgePaths: Array.isArray(cfg.knowledgePaths)
+        ? (cfg.knowledgePaths as unknown[]).filter((p): p is string => typeof p === "string")
         : undefined,
     };
 }
