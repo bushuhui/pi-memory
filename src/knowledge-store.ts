@@ -222,7 +222,7 @@ export class KnowledgeStore {
     await this.init();
     if (!this.table) return [];
 
-    const allChunks = await this.table.toArray();
+    const allChunks = await this.table.query().limit(100000).toArray();
     const fileMap = new Map<string, number>();
 
     for (const chunk of allChunks) {
