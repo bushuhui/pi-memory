@@ -21,7 +21,6 @@ import { createMemoryCLI } from "./cli.js";
 import { KnowledgeStore } from "./src/knowledge-store.js";
 import { KnowledgeIndexer } from "./src/knowledge-indexer.js";
 import { registerAllKnowledgeTools } from "./src/knowledge-tools.js";
-import { readFileSync } from "node:fs";
 
 // ============================================================================
 // Configuration & Types

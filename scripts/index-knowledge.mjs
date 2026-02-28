@@ -222,6 +222,70 @@ for (const rootPath of extraPaths) {
   console.log(`Finished ${rootPath} in ${elapsed}s`);
 }
 
+// ============================================================================
+// Orphan Cleanup — remove DB entries for deleted source files
+// ============================================================================
+
+console.log("");
+console.log("Checking for orphaned entries (deleted source files)...");
+
+// Collect all file paths that exist on disk
+const allDiskFiles = new Set();
+for (const rootPath of extraPaths) {
+  const files = await scanDirectory(rootPath);
+  for (const f of files) allDiskFiles.add(f);
+}
+
+// Query all distinct filePaths from DB
+let orphanDeleted = 0;
+try {
+  // LanceDB doesn't support SELECT DISTINCT, so we scan and deduplicate
+  const SCAN_BATCH = 5000;
+  const dbFilePaths = new Set();
+  let offset = 0;
+  while (true) {
+    const rows = await table.query().select(["filePath"]).limit(SCAN_BATCH).toArray();
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      if (row.filePath) dbFilePaths.add(row.filePath);
+    }
+    // LanceDB query().limit() doesn't support offset natively,
+    // but since we just need distinct filePaths, one pass is enough
+    // if table is small enough. For large tables, this gets all rows.
+    break;
+  }
+
+  // If table is large, do a full scan to get all unique filePaths
+  if (dbFilePaths.size > 0) {
+    const allRows = await table.query().select(["filePath"]).limit(100000).toArray();
+    for (const row of allRows) {
+      if (row.filePath) dbFilePaths.add(row.filePath);
+    }
+  }
+
+  // Find orphans: in DB but not on disk
+  for (const dbPath of dbFilePaths) {
+    if (dbPath === "/placeholder") continue;
+    if (!allDiskFiles.has(dbPath)) {
+      try {
+        await deleteByFilePath(dbPath);
+        orphanDeleted++;
+        console.log(`  Deleted orphan: ${dbPath}`);
+      } catch (err) {
+        console.warn(`  Failed to delete orphan ${dbPath}: ${err}`);
+      }
+    }
+  }
+
+  if (orphanDeleted === 0) {
+    console.log("  No orphaned entries found.");
+  } else {
+    console.log(`  Cleaned up ${orphanDeleted} orphaned file(s).`);
+  }
+} catch (err) {
+  console.warn(`[orphan-cleanup] Error during cleanup: ${err}`);
+}
+
 const totalChunks = await table.countRows();
 console.log("");
 console.log(`Indexing complete.`);
@@ -229,4 +293,5 @@ console.log(`  Scanned: ${totalScanned}`);
 console.log(`  Indexed: ${totalIndexed}`);
 console.log(`  Skipped: ${totalSkipped}`);
 console.log(`  Errors:  ${totalErrors}`);
+console.log(`  Orphans removed: ${orphanDeleted}`);
 console.log(`  Total chunks in DB: ${totalChunks}`);

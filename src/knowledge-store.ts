@@ -93,12 +93,19 @@ export class KnowledgeStore {
     // Create FTS index if not exists
     if (!this.ftsIndexCreated) {
       try {
-        await this.table.createIndex({
-          type: "fts",
-          columns: ["text", "fileName"],
-        });
+        const indices = await this.table.listIndices();
+        const hasFtsIndex = indices?.some((idx: any) =>
+          idx.indexType === "FTS" || idx.columns?.includes("text")
+        );
+
+        if (!hasFtsIndex) {
+          const lancedb = await loadLanceDB();
+          await this.table.createIndex("text", {
+            config: (lancedb as any).Index.fts(),
+          });
+          console.log(`[knowledge-store] FTS index created`);
+        }
         this.ftsIndexCreated = true;
-        console.log(`[knowledge-store] FTS index created`);
       } catch (err: any) {
         if (err?.message?.includes("already exists")) {
           this.ftsIndexCreated = true;
