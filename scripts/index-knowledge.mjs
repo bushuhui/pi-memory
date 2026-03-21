@@ -60,17 +60,21 @@ const openai = new OpenAI({
 
 async function embedBatch(texts) {
   if (!texts || texts.length === 0) return [];
-  
+
   // API may have batch size limits (e.g. Aliyun max 10)
   const BATCH_SIZE = 10;
   const allEmbeddings = [];
-  
+
   for (let i = 0; i < texts.length; i += BATCH_SIZE) {
     const batch = texts.slice(i, i + BATCH_SIZE);
-    const resp = await openai.embeddings.create({ model: embCfg.model, input: batch });
+    const resp = await openai.embeddings.create({
+      model: embCfg.model,
+      input: batch,
+      encoding_format: 'float'  // Explicitly use float format to avoid SDK base64 decoding issues
+    });
     allEmbeddings.push(...resp.data.map((d) => d.embedding));
   }
-  
+
   return allEmbeddings;
 }
 
