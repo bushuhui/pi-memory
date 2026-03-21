@@ -124,10 +124,31 @@ function chunkText(text) {
   const chunks = [];
   let start = 0;
   while (start < text.length) {
-    const end = Math.min(start + CHUNK_SIZE, text.length);
-    const chunk = text.slice(start, end).trim();
-    if (chunk.length > 50) chunks.push(chunk);
+    let end = Math.min(start + CHUNK_SIZE, text.length);
+
+    // Avoid splitting surrogate pairs (emoji and some special chars)
+    // If end is at a low surrogate, move back to include the full pair
+    if (end < text.length) {
+      const code = text.charCodeAt(end);
+      if (code >= 0xDC00 && code <= 0xDFFF) {
+        // We're at a low surrogate, move back to not split the pair
+        end--;
+      }
+    }
+
+    const chunk = text.slice(start, end);
+    const trimmed = chunk.trim();
+    if (trimmed.length > 50) chunks.push(trimmed);
+
     start += CHUNK_SIZE - CHUNK_OVERLAP;
+
+    // If start lands on a low surrogate, skip it
+    if (start < text.length) {
+      const code = text.charCodeAt(start);
+      if (code >= 0xDC00 && code <= 0xDFFF) {
+        start++;
+      }
+    }
   }
   return chunks;
 }
