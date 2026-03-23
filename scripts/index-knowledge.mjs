@@ -78,6 +78,46 @@ async function embedBatch(texts) {
   return allEmbeddings;
 }
 
+// Semaphore to limit concurrent embedding requests
+class Semaphore {
+  constructor(limit) {
+    this.limit = limit;
+    this.current = 0;
+    this.queue = [];
+  }
+
+  async acquire() {
+    if (this.current < this.limit) {
+      this.current++;
+      return;
+    }
+    await new Promise(resolve => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release() {
+    this.current--;
+    if (this.queue.length > 0) {
+      const next = this.queue.shift();
+      next();
+    } else {
+      this.current = Math.max(0, this.current);
+    }
+  }
+}
+
+const embedSemaphore = new Semaphore(3); // Max 3 concurrent embedding calls
+
+async function embedWithSemaphore(texts) {
+  await embedSemaphore.acquire();
+  try {
+    return await embedBatch(texts);
+  } finally {
+    embedSemaphore.release();
+  }
+}
+
 // ============================================================================
 // LanceDB Store
 // ============================================================================
@@ -100,15 +140,22 @@ if (tableNames.includes(TABLE_NAME)) {
   console.log(`[index-knowledge] Created new table: ${TABLE_NAME}`);
 }
 
-async function getFileMetadata(filePath) {
-  try {
-    const escaped = filePath.replace(/'/g, "''");
-    const results = await table.query().filter(`filePath = '${escaped}'`).limit(1).toArray();
-    if (results.length === 0) return null;
-    return { mtime: results[0].fileMtime || 0, hash: results[0].fileHash || "" };
-  } catch {
-    return null;
+// In-memory cache of file metadata: filePath -> { mtime, hash }
+let fileMetadataCache = new Map();
+
+async function loadFileMetadataCache() {
+  fileMetadataCache.clear();
+  const rows = await table.query().select(["filePath", "fileMtime", "fileHash"]).limit(100000).toArray();
+  for (const row of rows) {
+    if (row.filePath && row.filePath !== "/placeholder") {
+      fileMetadataCache.set(row.filePath, { mtime: row.fileMtime || 0, hash: row.fileHash || "" });
+    }
   }
+  console.log(`[cache] Loaded ${fileMetadataCache.size} file metadata entries into memory`);
+}
+
+function getFileMetadata(filePath) {
+  return fileMetadataCache.get(filePath) || null;
 }
 
 async function deleteByFilePath(filePath) {
@@ -181,7 +228,13 @@ async function scanDirectory(dirPath) {
 // Index
 // ============================================================================
 
+// Load all file metadata into memory once (optimization)
+await loadFileMetadataCache();
+
 let totalScanned = 0, totalIndexed = 0, totalSkipped = 0, totalErrors = 0;
+
+// Concurrent file processing
+const CONCURRENCY = 5; // Adjust based on performance needs
 
 for (const rootPath of extraPaths) {
   console.log(`Scanning: ${rootPath}`);
@@ -190,59 +243,86 @@ for (const rootPath of extraPaths) {
   totalScanned += files.length;
 
   const startTime = Date.now();
+  let processedCount = 0;
 
-  for (let i = 0; i < files.length; i++) {
-    const filePath = files[i];
-    const progress = `[${i + 1}/${files.length}]`;
+  // Process files in batches
+  let batchCount = 0;
+  for (let i = 0; i < files.length; i += CONCURRENCY) {
+    const batch = files.slice(i, i + CONCURRENCY);
+    batchCount++;
 
-    try {
-      // Read file
-      const stats = await stat(filePath);
-      const content = await readFile(filePath, "utf-8");
-      const contentHash = createHash("sha256").update(content).digest("hex");
+    const results = await Promise.allSettled(
+      batch.map(async (filePath, batchIdx) => {
+        const globalIdx = i + batchIdx;
+        const progress = `[${globalIdx + 1}/${files.length}]`;
+        const relPath = relative(rootPath, filePath);
 
-      // Check if unchanged
-      if (!forceReindex) {
-        const existing = await getFileMetadata(filePath);
-        if (existing && existing.mtime === Math.floor(stats.mtimeMs) && existing.hash === contentHash) {
-          totalSkipped++;
-          continue; // Skip silently
+        try {
+          // Read file
+          const stats = await stat(filePath);
+          const content = await readFile(filePath, "utf-8");
+          const contentHash = createHash("sha256").update(content).digest("hex");
+
+          // Check if unchanged
+          const existing = getFileMetadata(filePath);
+          if (existing && existing.mtime === Math.floor(stats.mtimeMs) && existing.hash === contentHash) {
+            return { type: "skipped", path: relPath };
+          }
+
+          // Delete old chunks
+          await deleteByFilePath(filePath);
+
+          // Chunk
+          const chunks = chunkText(content);
+          if (chunks.length === 0) return { type: "empty", path: relPath };
+
+          // Embed
+          const embeddings = await embedWithSemaphore(chunks);
+
+          // Store
+          const records = chunks.map((text, idx) => ({
+            id: randomUUID(),
+            text,
+            vector: embeddings[idx],
+            filePath,
+            fileName: basename(filePath),
+            fileType: extname(filePath).slice(1),
+            chunkIndex: idx,
+            timestamp: Date.now(),
+            fileMtime: Math.floor(stats.mtimeMs),
+            fileHash: contentHash,
+          }));
+
+          await table.add(records);
+          return { type: "indexed", path: relPath, chunks: chunks.length };
+        } catch (err) {
+          throw { path: relPath, error: err };
         }
+      })
+    );
+
+    // Process results
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        const r = result.value;
+        if (r.type === "skipped" || r.type === "empty") {
+          totalSkipped++;
+        } else if (r.type === "indexed") {
+          totalIndexed++;
+          processedCount++;
+          const msg = `Indexing: ${r.path} (${r.chunks} chunks) [${processedCount}/${files.length}]`;
+          process.stdout.write(`\r${msg}`);
+        }
+      } else {
+        totalErrors++;
+        const r = result.reason;
+        console.error(`\nError: ${r.path} — ${r.error.message || r.error}`);
       }
-
-      // Delete old chunks
-      await deleteByFilePath(filePath);
-
-      // Chunk
-      const chunks = chunkText(content);
-      if (chunks.length === 0) continue;
-
-      // Embed
-      const embeddings = await embedBatch(chunks);
-
-      // Store
-      const records = chunks.map((text, idx) => ({
-        id: randomUUID(),
-        text,
-        vector: embeddings[idx],
-        filePath,
-        fileName: basename(filePath),
-        fileType: extname(filePath).slice(1),
-        chunkIndex: idx,
-        timestamp: Date.now(),
-        fileMtime: Math.floor(stats.mtimeMs),
-        fileHash: contentHash,
-      }));
-
-      await table.add(records);
-      totalIndexed++;
-      console.log(`${progress} Indexed: ${relative(rootPath, filePath)} (${chunks.length} chunks)`);
-    } catch (err) {
-      totalErrors++;
-      console.error(`${progress} Error: ${relative(rootPath, filePath)} — ${err.message || err}`);
     }
   }
 
+  // Clear line and show directory completion
+  process.stdout.write("\r" + " ".repeat(80) + "\r");
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
   console.log(`Finished ${rootPath} in ${elapsed}s`);
 }
