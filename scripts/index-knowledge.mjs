@@ -29,11 +29,15 @@ const forceReindex = process.argv.includes("--force");
 // Read main config
 const configPath = join(homedir(), ".openclaw", "openclaw.json");
 const config = JSON.parse(readFileSync(configPath, "utf-8"));
-const extraPaths = config?.agents?.defaults?.memorySearch?.extraPaths || [];
-const dbPath = join(homedir(), ".openclaw", "memory", "lancedb-pro");
 
-// Read embedding config from main config (plugins.entries.memory-lancedb-pro.config.embedding)
-const embCfg = config?.plugins?.entries?.["memory-lancedb-pro"]?.config?.embedding;
+// Read config from plugin entry (memory-lancedb-pro)
+const pluginConfig = config?.plugins?.entries?.["memory-lancedb-pro"]?.config || {};
+const extraPaths = pluginConfig.knowledgePaths || [];
+const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/lancedb-pro";
+const dbPath = join(homedir(), dbPathConfig.replace("~/", ""));
+
+// Read embedding config from plugin config
+const embCfg = pluginConfig.embedding;
 
 if (!embCfg) {
   console.error("[index-knowledge] No embedding config found in openclaw.plugin.json");
@@ -311,7 +315,7 @@ for (const rootPath of extraPaths) {
           totalIndexed++;
           processedCount++;
           const msg = `Indexing: ${r.path} (${r.chunks} chunks) [${processedCount}/${files.length}]`;
-          process.stdout.write(`\r${msg}`);
+          process.stdout.write(`\n${msg}`);
         }
       } else {
         totalErrors++;
