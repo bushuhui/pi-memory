@@ -111,6 +111,10 @@ const EMBEDDING_DIMENSIONS: Record<string, number> = {
   // Jina v5
   "jina-embeddings-v5-text-small": 1024,
   "jina-embeddings-v5-text-nano": 768,
+
+  // Qwen3 Embedding
+  "unsloth/Qwen3-Embedding-0.6B": 1024,
+  "Qwen3-Embedding-0.6B": 1024,
 };
 
 // ============================================================================
@@ -236,6 +240,9 @@ export class Embedder {
     const payload: any = {
       model: this.model,
       input,
+      // Explicitly use float encoding to avoid SDK's base64 decoding which can cause
+      // dimension mismatches with some OpenAI-compatible providers
+      encoding_format: 'float',
     };
 
     if (task) payload.task = task;
