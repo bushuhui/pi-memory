@@ -215,9 +215,27 @@ async function scanDirectory(dirPath) {
     for (const entry of entries) {
       const fullPath = join(dirPath, entry.name);
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
-      if (entry.isDirectory()) {
+
+      // Follow symbolic links by using stat() instead of lstat()
+      let isDir = entry.isDirectory();
+      let isFile = entry.isFile();
+
+      // If it's a symbolic link, resolve it and check the target
+      if (entry.isSymbolicLink()) {
+        try {
+          const realStats = await stat(fullPath);
+          isDir = realStats.isDirectory();
+          isFile = realStats.isFile();
+        } catch (err) {
+          // Broken symlink or inaccessible, skip
+          console.warn(`[scan] Skipping broken symlink: ${fullPath}`);
+          continue;
+        }
+      }
+
+      if (isDir) {
         files.push(...await scanDirectory(fullPath));
-      } else if (entry.isFile()) {
+      } else if (isFile) {
         const ext = extname(entry.name).toLowerCase();
         if (SUPPORTED_EXTENSIONS.includes(ext)) files.push(fullPath);
       }
