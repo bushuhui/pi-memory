@@ -658,8 +658,8 @@ const memoryLanceDBProPlugin = {
           category: m.category,
           scope: m.scope,
           importance: m.importance,
-          timestamp: m.timestamp,
-          metadata: m.metadata,
+          timestamp: (m as any).created_at || m.timestamp,
+          metadata: (m as any).metadata || "{}",
         }));
 
         await writeFile(backupFile, lines.join("\n") + "\n");
