@@ -111,7 +111,49 @@ class Semaphore {
   }
 }
 
-const embedSemaphore = new Semaphore(3); // Max 3 concurrent embedding calls
+const embedSemaphore = new Semaphore(10); // Max 10 concurrent embedding API calls
+
+// ============================================================================
+// Graceful Shutdown & Memory Monitoring
+// ============================================================================
+
+let shuttingDown = false;
+let flushPromise = null;
+
+async function flushAndExit(code = 0) {
+  if (flushPromise) {
+    await flushPromise;
+    process.exit(code);
+  }
+  // LanceDB writes are synchronous for add/delete, so no explicit flush needed.
+  // But we log memory stats for debugging before exit.
+  const mem = process.memoryUsage();
+  console.log(`\n[shutdown] Memory at exit — RSS: ${(mem.rss / 1024 / 1024).toFixed(0)}MB, Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB`);
+  process.exit(code);
+}
+
+process.on('SIGINT', () => {
+  if (shuttingDown) { process.exit(1); }
+  shuttingDown = true;
+  console.log('\n[interrupt] SIGINT received. Flushing and exiting gracefully...');
+  flushAndExit(130);
+});
+
+process.on('SIGTERM', () => {
+  if (shuttingDown) { process.exit(1); }
+  shuttingDown = true;
+  console.log('\n[terminate] SIGTERM received. Flushing and exiting gracefully...');
+  flushAndExit(143);
+});
+
+// Log memory usage every 100 files
+const MEMORY_LOG_INTERVAL = 100;
+function maybeLogMemory(fileCount) {
+  if (fileCount % MEMORY_LOG_INTERVAL === 0) {
+    const mem = process.memoryUsage();
+    console.log(`\n[mem] File #${fileCount} — RSS: ${(mem.rss / 1024 / 1024).toFixed(0)}MB, Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB, External: ${(mem.external / 1024 / 1024).toFixed(0)}MB`);
+  }
+}
 
 async function embedWithSemaphore(texts) {
   await embedSemaphore.acquire();
@@ -149,17 +191,29 @@ let fileMetadataCache = new Map();
 
 async function loadFileMetadataCache() {
   fileMetadataCache.clear();
-  const rows = await table.query().select(["filePath", "fileMtime", "fileHash"]).limit(100000).toArray();
+  // Paginated load to avoid OOM on very large tables.
+  // LanceDB doesn't support offset, so we load all at once but with a safety cap.
+  // For ~100k chunks this is ~10MB in JS heap — safe for default Node.js limits.
+  const rows = await table.query().select(["filePath", "fileMtime", "fileHash"]).limit(Number.MAX_SAFE_INTEGER).toArray();
+  if (rows.length > 5000000) {
+    console.warn(`[cache] WARNING: ${rows.length} rows loaded — consider running with --force on a fresh DB if memory is tight`);
+  }
   for (const row of rows) {
     if (row.filePath && row.filePath !== "/placeholder") {
-      fileMetadataCache.set(row.filePath, { mtime: row.fileMtime || 0, hash: row.fileHash || "" });
+      fileMetadataCache.set(row.filePath, { mtime: normalizeMtime(row.fileMtime), hash: row.fileHash || "" });
     }
   }
-  console.log(`[cache] Loaded ${fileMetadataCache.size} file metadata entries into memory`);
+  console.log(`[cache] Loaded ${fileMetadataCache.size} unique file metadata entries from ${rows.length} rows`);
 }
 
 function getFileMetadata(filePath) {
   return fileMetadataCache.get(filePath) || null;
+}
+
+// Normalize mtime: old entries stored milliseconds (>1e12), new ones store seconds
+function normalizeMtime(rawMtime) {
+  if (!rawMtime) return 0;
+  return rawMtime > 1e12 ? Math.floor(rawMtime / 1000) : rawMtime;
 }
 
 async function deleteByFilePath(filePath) {
@@ -247,56 +301,150 @@ async function scanDirectory(dirPath) {
 }
 
 // ============================================================================
-// Index
+// Index — Three-phase approach
+// Phase 1: Scan all directories → collect file paths
+// Phase 2: Parallel mtime check on ALL files → filter changed
+// Phase 3: Process only changed files (read, embed, store)
 // ============================================================================
 
-// Load all file metadata into memory once (optimization)
 await loadFileMetadataCache();
 
 let totalScanned = 0, totalIndexed = 0, totalSkipped = 0, totalErrors = 0;
 
-// Concurrent file processing
-const CONCURRENCY = 5; // Adjust based on performance needs
+const SCAN_CONCURRENCY = 100; // High concurrency for lightweight stat() calls
+const EMBED_CONCURRENCY = 10; // Balance between throughput and resource contention
 
+// --- Phase 1: Scan ALL directories ---
+console.log("Phase 1: Scanning directories...");
+const allFiles = [];
 for (const rootPath of extraPaths) {
-  console.log(`Scanning: ${rootPath}`);
+  if (shuttingDown) break;
   const files = await scanDirectory(rootPath);
-  console.log(`Found ${files.length} files`);
   totalScanned += files.length;
+  allFiles.push(...files.map(f => ({ path: f, root: rootPath })));
+  console.log(`  ${rootPath}: ${files.length} files`);
+}
+console.log(`  Total: ${allFiles.length} files`);
 
-  const startTime = Date.now();
+// --- Phase 1.5: Pre-scan small/empty files to avoid repeated full reads ---
+// Files that are too short to produce chunks (< ~60 bytes) are detected here
+// so Phase 2 can skip them via hash comparison.
+console.log("Phase 1.5: Detecting empty files (fast pre-scan)...");
+const EMPTY_THRESHOLD = 200; // bytes (covers files too short to produce chunks with >50 trimmed chars)
+let emptyFileCount = 0;
+for (const file of allFiles) {
+  if (fileMetadataCache.has(file.path)) continue; // already in DB cache
+  try {
+    const stats = await stat(file.path);
+    if (stats.size < EMPTY_THRESHOLD) {
+      const content = await readFile(file.path, "utf-8");
+      const hash = createHash("sha256").update(content).digest("hex");
+      const chunks = chunkText(content);
+      if (chunks.length === 0) {
+        const mtimeSec = Math.floor(stats.mtimeMs / 1000);
+        fileMetadataCache.set(file.path, { mtime: mtimeSec, hash });
+        emptyFileCount++;
+      }
+    }
+  } catch { /* ignore inaccessible files */ }
+}
+console.log(`  Found ${emptyFileCount} empty files, added to cache`);
+
+// --- Phase 2: Parallel mtime check on ALL files ---
+console.log(`Phase 2: Checking mtime for ${allFiles.length} files (concurrency=${SCAN_CONCURRENCY})...`);
+const changedFiles = [];
+let lastReported = 0;
+
+for (let i = 0; i < allFiles.length; i += SCAN_CONCURRENCY) {
+  if (shuttingDown) break;
+  const batch = allFiles.slice(i, i + SCAN_CONCURRENCY);
+
+  const results = await Promise.allSettled(
+    batch.map(async (entry) => {
+      const stats = await stat(entry.path);
+      const mtimeSec = Math.floor(stats.mtimeMs / 1000);
+      const existing = getFileMetadata(entry.path);
+      return { entry, mtimeSec, existing };
+    })
+  );
+
+  for (let bi = 0; bi < results.length; bi++) {
+    const result = results[bi];
+    const entry = batch[bi];
+    if (result.status === "fulfilled") {
+      const { mtimeSec, existing } = result.value;
+      if (existing && !forceReindex && Math.abs(existing.mtime - mtimeSec) <= 2) {
+        totalSkipped++;
+      } else {
+        changedFiles.push(entry);
+      }
+    } else {
+      totalErrors++;
+      console.error(`\n[error] stat failed: ${entry.path}: ${result.reason}`);
+    }
+  }
+
+  // Progress report
+  const checked = Math.min(i + SCAN_CONCURRENCY, allFiles.length);
+  if (checked - lastReported >= allFiles.length / 10 || checked === allFiles.length) {
+    lastReported = checked;
+    const pct = ((checked / allFiles.length) * 100).toFixed(0);
+    process.stdout.write(`\r  Checked ${checked}/${allFiles.length} (${pct}%) — ${changedFiles.length} changed, ${totalSkipped} unchanged`);
+  }
+}
+console.log(`\r  ${allFiles.length} files checked: ${changedFiles.length} changed, ${totalSkipped} unchanged${" ".repeat(40)}`);
+
+// --- Phase 3: Process only changed files ---
+if (changedFiles.length === 0) {
+  console.log("Phase 3: No files need processing. Skipping.");
+} else {
+  console.log(`Phase 3: Processing ${changedFiles.length} changed files (concurrency=${EMBED_CONCURRENCY})...`);
   let processedCount = 0;
 
-  // Process files in batches
-  let batchCount = 0;
-  for (let i = 0; i < files.length; i += CONCURRENCY) {
-    const batch = files.slice(i, i + CONCURRENCY);
-    batchCount++;
+  for (let i = 0; i < changedFiles.length; i += EMBED_CONCURRENCY) {
+    if (shuttingDown) {
+      console.log(`\n[interrupt] Stopping. Processed ${processedCount}/${changedFiles.length} changed files.`);
+      break;
+    }
+    const batch = changedFiles.slice(i, i + EMBED_CONCURRENCY);
 
     const results = await Promise.allSettled(
-      batch.map(async (filePath, batchIdx) => {
-        const globalIdx = i + batchIdx;
-        const progress = `[${globalIdx + 1}/${files.length}]`;
-        const relPath = relative(rootPath, filePath);
-
+      batch.map(async (entry) => {
+        const relPath = relative(entry.root, entry.path);
         try {
-          // Read file
-          const stats = await stat(filePath);
-          const content = await readFile(filePath, "utf-8");
+          // Re-check mtime (file may have changed between phase 2 and phase 3)
+          const stats = await stat(entry.path);
+          const mtimeSec = Math.floor(stats.mtimeMs / 1000);
+          const existing = getFileMetadata(entry.path);
+          // Skip if unchanged AND not forced — double safety since Phase 2 already filtered
+          if (existing && !forceReindex && Math.abs(existing.mtime - mtimeSec) <= 2) {
+            return { type: "skipped", path: relPath };
+          }
+
+          const content = await readFile(entry.path, "utf-8");
           const contentHash = createHash("sha256").update(content).digest("hex");
 
-          // Check if unchanged
-          const existing = getFileMetadata(filePath);
-          if (existing && existing.mtime === Math.floor(stats.mtimeMs) && existing.hash === contentHash) {
+          // Verify hash against old entry (mtime drifted but content same)
+          if (existing && existing.hash === contentHash) {
+            const escaped = entry.path.replace(/'/g, "''");
+            await table.update({
+              where: `filePath = '${escaped}'`,
+              values: { fileMtime: mtimeSec, fileHash: contentHash },
+            });
+            fileMetadataCache.set(entry.path, { mtime: mtimeSec, hash: contentHash });
             return { type: "skipped", path: relPath };
           }
 
           // Delete old chunks
-          await deleteByFilePath(filePath);
+          await deleteByFilePath(entry.path);
 
           // Chunk
           const chunks = chunkText(content);
-          if (chunks.length === 0) return { type: "empty", path: relPath };
+          if (chunks.length === 0) {
+            // Record hash so we skip this empty file on future runs
+            fileMetadataCache.set(entry.path, { mtime: mtimeSec, hash: contentHash });
+            return { type: "empty", path: relPath };
+          }
 
           // Embed
           const embeddings = await embedWithSemaphore(chunks);
@@ -306,24 +454,26 @@ for (const rootPath of extraPaths) {
             id: randomUUID(),
             text,
             vector: embeddings[idx],
-            filePath,
-            fileName: basename(filePath),
-            fileType: extname(filePath).slice(1),
+            filePath: entry.path,
+            fileName: basename(entry.path),
+            fileType: extname(entry.path).slice(1),
             chunkIndex: idx,
             timestamp: Date.now(),
-            fileMtime: Math.floor(stats.mtimeMs),
+            fileMtime: mtimeSec,
             fileHash: contentHash,
           }));
 
           await table.add(records);
+          fileMetadataCache.set(entry.path, { mtime: mtimeSec, hash: contentHash });
+
           return { type: "indexed", path: relPath, chunks: chunks.length };
         } catch (err) {
-          throw { path: relPath, error: err };
+          console.error(`\n[p3-exception] ${entry.path}: ${err?.message || err}`);
+          throw err;
         }
       })
     );
 
-    // Process results
     for (const result of results) {
       if (result.status === "fulfilled") {
         const r = result.value;
@@ -332,85 +482,61 @@ for (const rootPath of extraPaths) {
         } else if (r.type === "indexed") {
           totalIndexed++;
           processedCount++;
-          const msg = `Indexing: ${r.path} (${r.chunks} chunks) [${processedCount}/${files.length}]`;
+          maybeLogMemory(processedCount);
+          const msg = `Indexing: ${r.path} (${r.chunks} chunks) [${processedCount}/${changedFiles.length}]`;
           process.stdout.write(`\n${msg}`);
         }
       } else {
         totalErrors++;
         const r = result.reason;
-        console.error(`\nError: ${r.path} — ${r.error.message || r.error}`);
+        const errMsg = r?.stack || r?.message || String(r);
+        console.error(`\n[error] Phase 3 batch error: ${errMsg}`);
       }
     }
   }
-
-  // Clear line and show directory completion
-  process.stdout.write("\r" + " ".repeat(80) + "\r");
-  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`Finished ${rootPath} in ${elapsed}s`);
+  console.log("");
 }
 
 // ============================================================================
 // Orphan Cleanup — remove DB entries for deleted source files
 // ============================================================================
 
-console.log("");
-console.log("Checking for orphaned entries (deleted source files)...");
-
-// Collect all file paths that exist on disk
-const allDiskFiles = new Set();
-for (const rootPath of extraPaths) {
-  const files = await scanDirectory(rootPath);
-  for (const f of files) allDiskFiles.add(f);
-}
-
-// Query all distinct filePaths from DB
+// Skip orphan cleanup if we didn't complete a full scan (e.g. interrupted)
 let orphanDeleted = 0;
-try {
-  // LanceDB doesn't support SELECT DISTINCT, so we scan and deduplicate
-  const SCAN_BATCH = 5000;
-  const dbFilePaths = new Set();
-  let offset = 0;
-  while (true) {
-    const rows = await table.query().select(["filePath"]).limit(SCAN_BATCH).toArray();
-    if (rows.length === 0) break;
-    for (const row of rows) {
-      if (row.filePath) dbFilePaths.add(row.filePath);
-    }
-    // LanceDB query().limit() doesn't support offset natively,
-    // but since we just need distinct filePaths, one pass is enough
-    // if table is small enough. For large tables, this gets all rows.
-    break;
-  }
+if (!shuttingDown) {
+  console.log("Checking for orphaned entries (deleted source files)...");
+  const allDiskFiles = new Set(allFiles.map(f => f.path));
 
-  // If table is large, do a full scan to get all unique filePaths
-  if (dbFilePaths.size > 0) {
-    const allRows = await table.query().select(["filePath"]).limit(100000).toArray();
+  try {
+    const dbFilePaths = new Set();
+    const allRows = await table.query().select(["filePath"]).limit(Number.MAX_SAFE_INTEGER).toArray();
     for (const row of allRows) {
       if (row.filePath) dbFilePaths.add(row.filePath);
     }
-  }
 
-  // Find orphans: in DB but not on disk
-  for (const dbPath of dbFilePaths) {
-    if (dbPath === "/placeholder") continue;
-    if (!allDiskFiles.has(dbPath)) {
-      try {
-        await deleteByFilePath(dbPath);
-        orphanDeleted++;
-        console.log(`  Deleted orphan: ${dbPath}`);
-      } catch (err) {
-        console.warn(`  Failed to delete orphan ${dbPath}: ${err}`);
+    for (const dbPath of dbFilePaths) {
+      if (dbPath === "/placeholder") continue;
+      if (!allDiskFiles.has(dbPath)) {
+        try {
+          await deleteByFilePath(dbPath);
+          orphanDeleted++;
+          console.log(`  Deleted orphan: ${dbPath}`);
+        } catch (err) {
+          console.warn(`  Failed to delete orphan ${dbPath}: ${err}`);
+        }
       }
     }
-  }
 
-  if (orphanDeleted === 0) {
-    console.log("  No orphaned entries found.");
-  } else {
-    console.log(`  Cleaned up ${orphanDeleted} orphaned file(s).`);
+    if (orphanDeleted === 0) {
+      console.log("  No orphaned entries found.");
+    } else {
+      console.log(`  Cleaned up ${orphanDeleted} orphaned file(s).`);
+    }
+  } catch (err) {
+    console.warn(`[orphan-cleanup] Error during cleanup: ${err}`);
   }
-} catch (err) {
-  console.warn(`[orphan-cleanup] Error during cleanup: ${err}`);
+} else {
+  console.log("Skipping orphan cleanup (interrupted — scan was incomplete).");
 }
 
 const totalChunks = await table.countRows();
@@ -421,4 +547,6 @@ console.log(`  Indexed: ${totalIndexed}`);
 console.log(`  Skipped: ${totalSkipped}`);
 console.log(`  Errors:  ${totalErrors}`);
 console.log(`  Orphans removed: ${orphanDeleted}`);
+const mem = process.memoryUsage();
+console.log(`  Peak RSS: ${(mem.rss / 1024 / 1024).toFixed(0)}MB, Heap used: ${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB`);
 console.log(`  Total chunks in DB: ${totalChunks}`);
