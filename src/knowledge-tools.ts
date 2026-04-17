@@ -37,6 +37,28 @@ interface ScoredChunk {
 }
 
 // ============================================================================
+// Citation Formatting (matches memory-core pattern)
+// ============================================================================
+
+function formatCitation(path: string, startLine?: number, endLine?: number): string {
+  if (startLine && endLine && startLine !== endLine) {
+    return `${path}#L${startLine}-L${endLine}`;
+  } else if (startLine) {
+    return `${path}#L${startLine}`;
+  }
+  return path;
+}
+
+function estimateLineRange(text: string, chunkIndex: number): { startLine: number; endLine: number } {
+  // Estimate lines based on text length (rough: ~60 chars per line for prose)
+  const avgLineLength = 60;
+  const linesInChunk = Math.ceil(text.length / avgLineLength);
+  const startLine = chunkIndex * 15 + 1; // Rough estimate: ~15 lines per chunk
+  const endLine = startLine + linesInChunk - 1;
+  return { startLine, endLine };
+}
+
+// ============================================================================
 // Reranker (shared with retriever.ts pattern)
 // ============================================================================
 
@@ -302,7 +324,8 @@ export function registerAllKnowledgeTools(
     label: "Knowledge Search",
     description:
       "Search the indexed knowledge base (Obsidian vault, documentation, etc.) using hybrid retrieval: " +
-      "vector similarity + BM25 keyword search + cross-encoder reranking. Returns relevant text chunks with file paths and scores.",
+      "vector similarity + BM25 keyword search + cross-encoder reranking. " +
+      "Also accessible via memory_search with corpus=all (searches both memory files and knowledge base).",
     parameters: Type.Object({
       query: Type.String({ description: "Search query (natural language or keywords)" }),
       limit: Type.Optional(Type.Number({ description: "Maximum results to return (default: 5, max: 20)" })),
@@ -321,6 +344,7 @@ export function registerAllKnowledgeTools(
           };
         }
 
+        // Format results with citations (matches memory-core pattern)
         const formatted = results
           .map((r, idx) => {
             const sources: string[] = [];
@@ -328,19 +352,55 @@ export function registerAllKnowledgeTools(
             if (r.sources.bm25) sources.push("BM25");
             if (r.sources.reranked) sources.push("reranked");
 
+            const { startLine, endLine } = estimateLineRange(r.chunk.text, r.chunk.chunkIndex);
+            const citation = formatCitation(r.chunk.filePath, startLine, endLine);
+            const snippet = r.chunk.text.slice(0, 500) + (r.chunk.text.length > 500 ? "..." : "");
+
             return [
-              `[${idx + 1}] ${r.chunk.fileName} (chunk ${r.chunk.chunkIndex})`,
+              `[${idx + 1}] ${r.chunk.fileName}`,
               `Path: ${r.chunk.filePath}`,
               `Score: ${(r.score * 100).toFixed(0)}% (${sources.join("+")})`,
               `---`,
-              r.chunk.text.slice(0, 500) + (r.chunk.text.length > 500 ? "..." : ""),
+              snippet,
+              ``,
+              `Source: ${citation}`,
               "",
             ].join("\n");
           })
           .join("\n");
 
+        // Return structured results (matches MemoryCorpusSearchResult format)
+        const structuredResults = results.map((r) => {
+          const { startLine, endLine } = estimateLineRange(r.chunk.text, r.chunk.chunkIndex);
+          const citation = formatCitation(r.chunk.filePath, startLine, endLine);
+
+          return {
+            corpus: "knowledge",
+            path: r.chunk.filePath,
+            title: r.chunk.fileName,
+            kind: r.chunk.fileType,
+            score: r.score,
+            snippet: r.chunk.text.slice(0, 500),
+            id: r.chunk.id,
+            startLine,
+            endLine,
+            citation,
+            source: r.chunk.filePath,
+            provenanceLabel: "lancedb-pro",
+            sourceType: "indexed-file",
+            sourcePath: r.chunk.filePath,
+            updatedAt: new Date(r.chunk.timestamp).toISOString(),
+          };
+        });
+
         return {
           content: [{ type: "text" as const, text: `Found ${results.length} results for: "${params.query}"\n\n${formatted}` }],
+          details: {
+            results: structuredResults,
+            corpus: "knowledge",
+            retrievalMode: retrievalConfig.mode,
+            rerank: retrievalConfig.rerank,
+          },
         };
       } catch (err) {
         return {

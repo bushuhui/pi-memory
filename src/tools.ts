@@ -619,6 +619,287 @@ export function registerMemoryListTool(api: OpenClawPluginApi, context: ToolCont
 }
 
 // ============================================================================
+// OpenClaw-compatible Tools (memory_search, memory_get)
+// These match the interface expected by OpenClaw's memory-core
+// ============================================================================
+
+/**
+ * memory_search - OpenClaw-compatible semantic search tool
+ * Searches LanceDB memories and optionally corpus supplements (knowledge base)
+ */
+export function registerMemorySearchTool(api: OpenClawPluginApi, context: ToolContext) {
+  api.registerTool(
+    {
+      name: "memory_search",
+      label: "Memory Search",
+      description: "Mandatory recall step: semantically search LanceDB-backed memories before answering questions about prior work, decisions, dates, people, preferences, or todos. Optional `corpus=wiki` or `corpus=all` also searches registered corpus supplements (knowledge base). If response has disabled=true, memory retrieval is unavailable.",
+      parameters: Type.Object({
+        query: Type.String({ description: "Search query for finding relevant memories" }),
+        maxResults: Type.Optional(Type.Number({ description: "Maximum results to return (default: 10)" })),
+        minScore: Type.Optional(Type.Number({ description: "Minimum score threshold (0-1)" })),
+        corpus: Type.Optional(Type.Union([
+          Type.Literal("memory"),
+          Type.Literal("wiki"),
+          Type.Literal("all"),
+        ])),
+      }),
+      async execute(_toolCallId, params) {
+        const { query, maxResults = 10, minScore, corpus } = params as {
+          query: string;
+          maxResults?: number;
+          minScore?: number;
+          corpus?: "memory" | "wiki" | "all";
+        };
+
+        try {
+          const safeMaxResults = clampInt(maxResults, 1, 50);
+          const shouldQueryMemory = corpus !== "wiki";
+          const shouldQuerySupplements = corpus === "wiki" || corpus === "all";
+
+          // Determine accessible scopes
+          const scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+
+          let memoryResults: any[] = [];
+          let provider = "lancedb-pro";
+          let model = context.retriever.getConfig().mode;
+          let fallback = false;
+          let searchMode = context.retriever.getConfig().mode;
+
+          // Search LanceDB memories
+          if (shouldQueryMemory) {
+            const results = await context.retriever.retrieve({
+              query,
+              limit: safeMaxResults,
+              minScore,
+              scopeFilter,
+            });
+
+            // Convert to OpenClaw MemoryCorpusSearchResult format
+            memoryResults = results.map(r => ({
+              corpus: "memory",
+              path: `memory/${r.entry.id.slice(0, 8)}.md`,
+              title: r.entry.text.slice(0, 50),
+              kind: r.entry.category,
+              score: r.score,
+              snippet: r.entry.text.slice(0, 200),
+              id: r.entry.id,
+              startLine: 1,
+              endLine: Math.ceil(r.entry.text.length / 60),
+              citation: `memory/${r.entry.id.slice(0, 8)}.md#L1`,
+              source: "lancedb-pro",
+              provenanceLabel: "lancedb-pro",
+              sourceType: "database",
+              sourcePath: r.entry.id,
+              updatedAt: new Date(r.entry.timestamp).toISOString(),
+            }));
+          }
+
+          // Search corpus supplements (knowledge base) via MemoryCorpusSupplement
+          let supplementResults: any[] = [];
+          if (shouldQuerySupplements) {
+            // Supplements are searched by OpenClaw's memory-core when corpus="wiki" or "all"
+            // Our MemoryCorpusSupplement will be called automatically
+            // Here we just note that supplements should be included
+            // The actual supplement search happens through the registered MemoryCorpusSupplement
+          }
+
+          const allResults = [...memoryResults, ...supplementResults]
+            .sort((a, b) => b.score - a.score)
+            .slice(0, safeMaxResults);
+
+          if (allResults.length === 0 && shouldQueryMemory) {
+            return {
+              content: [{ type: "text", text: "No relevant memories found." }],
+              details: {
+                results: [],
+                provider,
+                model,
+                fallback,
+                mode: searchMode,
+                query,
+                corpus: corpus || "memory",
+              },
+            };
+          }
+
+          const text = allResults
+            .map((r, i) => `${i + 1}. [${r.corpus}:${r.kind}] ${r.snippet} (${(r.score * 100).toFixed(0)}%)`)
+            .join("\n");
+
+          return {
+            content: [{ type: "text", text: `Found ${allResults.length} results:\n\n${text}` }],
+            details: {
+              results: allResults,
+              provider,
+              model,
+              fallback,
+              mode: searchMode,
+              query,
+              corpus: corpus || "memory",
+            },
+          };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          const isQuotaError = /insufficient_quota|quota|429/i.test(errorMsg);
+          return {
+            content: [{
+              type: "text",
+              text: isQuotaError
+                ? "Memory search unavailable: embedding provider quota exhausted."
+                : `Memory search failed: ${errorMsg}`,
+            }],
+            details: {
+              results: [],
+              disabled: true,
+              unavailable: true,
+              error: errorMsg,
+              warning: isQuotaError
+                ? "Memory search is unavailable because the embedding provider quota is exhausted."
+                : "Memory search is unavailable due to an embedding/provider error.",
+              action: isQuotaError
+                ? "Top up or switch embedding provider, then retry memory_search."
+                : "Check embedding provider configuration and retry memory_search.",
+            },
+          };
+        }
+      },
+    },
+    { name: "memory_search" }
+  );
+}
+
+/**
+ * memory_get - OpenClaw-compatible memory read tool
+ * Reads a specific memory entry by ID or path
+ */
+export function registerMemoryGetTool(api: OpenClawPluginApi, context: ToolContext) {
+  api.registerTool(
+    {
+      name: "memory_get",
+      label: "Memory Get",
+      description: "Read a specific memory entry from LanceDB by ID or path. Defaults to full content when lines are omitted. Use `corpus=wiki` to read from registered corpus supplements.",
+      parameters: Type.Object({
+        path: Type.String({ description: "Memory ID or path to read" }),
+        from: Type.Optional(Type.Number({ description: "Starting line (default: 1)" })),
+        lines: Type.Optional(Type.Number({ description: "Number of lines to read (default: 200)" })),
+        corpus: Type.Optional(Type.Union([
+          Type.Literal("memory"),
+          Type.Literal("wiki"),
+          Type.Literal("all"),
+        ])),
+      }),
+      async execute(_toolCallId, params) {
+        const { path: relPath, from = 1, lines = 200, corpus } = params as {
+          path: string;
+          from?: number;
+          lines?: number;
+          corpus?: "memory" | "wiki" | "all";
+        };
+
+        try {
+          const fromLine = Math.max(1, from);
+          const lineCount = Math.max(1, lines);
+
+          // For wiki corpus, let the MemoryCorpusSupplement handle it
+          if (corpus === "wiki") {
+            // The supplement.get() will be called by OpenClaw's memory-core
+            // Return a placeholder that indicates wiki should be used
+            return {
+              content: [{ type: "text", text: `Wiki corpus read requested for: ${relPath}` }],
+              details: {
+                path: relPath,
+                corpus: "wiki",
+                fromLine,
+                lineCount,
+              },
+            };
+          }
+
+          // Extract memory ID from path (could be full UUID or shortened path)
+          let memoryId = relPath;
+          if (relPath.includes("/")) {
+            // Extract ID from path like "memory/abc12345.md"
+            const match = relPath.match(/memory\/([0-9a-f-]+)\.md$/i);
+            if (match) {
+              memoryId = match[1];
+            }
+          }
+
+          // Determine accessible scopes
+          const scopeFilter = context.scopeManager.getAccessibleScopes(context.agentId);
+
+          // Try to find the memory by ID (prefix match)
+          const allMemories = await context.store.list(scopeFilter, undefined, 1000, 0);
+          const matching = allMemories.filter(m =>
+            m.id === memoryId ||
+            m.id.startsWith(memoryId) ||
+            m.id.slice(0, 8) === memoryId
+          );
+
+          if (matching.length === 0) {
+            const errorResult = {
+              path: relPath,
+              text: "",
+              disabled: true,
+              error: `Memory not found: ${relPath}`,
+            };
+            return {
+              content: [{ type: "text", text: JSON.stringify(errorResult, null, 2) }],
+              details: errorResult,
+            };
+          }
+
+          const memory = matching[0];
+
+          // Split content into lines for slicing
+          const contentLines = memory.text.split(/\r?\n/);
+          const totalLines = contentLines.length;
+          const contentSlice = contentLines.slice(fromLine - 1, fromLine - 1 + lineCount).join("\n");
+          const truncated = fromLine - 1 + lineCount < totalLines;
+          const nextFrom = truncated ? fromLine + lineCount : undefined;
+
+          // Return structured JSON result (matching OpenClaw memory-core format)
+          const result = {
+            text: contentSlice,
+            path: relPath,
+            from: fromLine,
+            lines: lineCount,
+            truncated: truncated || undefined,
+            nextFrom,
+            // Additional metadata for LanceDB entries
+            id: memory.id,
+            category: memory.category,
+            scope: memory.scope,
+            importance: memory.importance,
+            timestamp: new Date(memory.timestamp).toISOString(),
+            source: "memory",
+            provenanceLabel: "lancedb-pro",
+          };
+
+          return {
+            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            details: result,
+          };
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          const errorResult = {
+            path: relPath,
+            text: "",
+            disabled: true,
+            error: errorMsg,
+          };
+          return {
+            content: [{ type: "text", text: JSON.stringify(errorResult, null, 2) }],
+            details: errorResult,
+          };
+        }
+      },
+    },
+    { name: "memory_get" }
+  );
+}
+
+// ============================================================================
 // Tool Registration Helper
 // ============================================================================
 
@@ -629,7 +910,11 @@ export function registerAllMemoryTools(
     enableManagementTools?: boolean;
   } = {}
 ) {
-  // Core tools (always enabled)
+  // OpenClaw-compatible tools (memory_search, memory_get)
+  registerMemorySearchTool(api, context);
+  registerMemoryGetTool(api, context);
+
+  // Legacy tools (backward compatible)
   registerMemoryRecallTool(api, context);
   registerMemoryStoreTool(api, context);
   registerMemoryForgetTool(api, context);

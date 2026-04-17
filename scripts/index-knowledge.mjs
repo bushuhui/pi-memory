@@ -30,13 +30,9 @@ const forceReindex = process.argv.includes("--force");
 const configPath = join(homedir(), ".openclaw", "openclaw.json");
 const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
-// Read knowledge paths from agents.defaults.memorySearch.extraPaths (primary source)
-// Fallback to plugin config knowledgePaths if extraPaths not set
-const memorySearchConfig = config?.agents?.defaults?.memorySearch || {};
-const extraPaths = memorySearchConfig.extraPaths || [];
-
-// Also read plugin config for dbPath and embedding settings
+// Read config from plugin entry (memory-lancedb-pro)
 const pluginConfig = config?.plugins?.entries?.["memory-lancedb-pro"]?.config || {};
+const extraPaths = pluginConfig.knowledgePaths || [];
 const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/lancedb-pro";
 const dbPath = join(homedir(), dbPathConfig.replace("~/", ""));
 

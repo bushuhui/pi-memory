@@ -21,6 +21,7 @@ import { createMemoryCLI } from "./cli.js";
 import { KnowledgeStore } from "./src/knowledge-store.js";
 import { KnowledgeIndexer } from "./src/knowledge-indexer.js";
 import { registerAllKnowledgeTools, hybridKnowledgeSearch } from "./src/knowledge-tools.js";
+import { createLanceDBMemoryRuntime } from "./src/runtime.js";
 
 // ============================================================================
 // Configuration & Types
@@ -287,6 +288,41 @@ function getPluginVersion(): string {
 }
 
 // ============================================================================
+// Prompt Builder (matches memory-core pattern)
+// ============================================================================
+
+function buildMemoryPromptSection(params: { availableTools: Set<string>; citationsMode?: string }): string[] {
+  const { availableTools, citationsMode } = params;
+  const hasMemorySearch = availableTools.has("memory_search");
+  const hasMemoryGet = availableTools.has("memory_get");
+  const hasMemoryRecall = availableTools.has("memory_recall");
+
+  if (!hasMemorySearch && !hasMemoryGet && !hasMemoryRecall) return [];
+
+  let toolGuidance: string;
+  if (hasMemorySearch && hasMemoryGet) {
+    toolGuidance = "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on LanceDB-backed memories; then use memory_get to pull specific entries. Use memory_recall for legacy retrieval. If low confidence after search, say you checked.";
+  } else if (hasMemorySearch) {
+    toolGuidance = "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on LanceDB-backed memories and answer from the matching results. If low confidence after search, say you checked.";
+  } else if (hasMemoryRecall) {
+    toolGuidance = "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_recall on LanceDB-backed memories using hybrid retrieval (vector + keyword). If low confidence after search, say you checked.";
+  } else {
+    toolGuidance = "Before answering anything about prior work, decisions, dates, people, preferences, or todos that already point to a specific memory: run memory_get to read the entry. If low confidence after reading, say you checked.";
+  }
+
+  const lines = ["## Memory Recall (LanceDB Pro)", toolGuidance];
+
+  if (citationsMode === "off") {
+    lines.push("Citations are disabled: do not mention memory IDs or entry paths in replies unless the user explicitly asks.");
+  } else {
+    lines.push("Citations: include memory ID or Source: <path#line> when it helps the user verify memory snippets.");
+  }
+
+  lines.push("");
+  return lines;
+}
+
+// ============================================================================
 // Plugin Definition
 // ============================================================================
 
@@ -363,6 +399,23 @@ const memoryLanceDBProPlugin = {
     );
 
     // ========================================================================
+    // Register Memory Capability (OpenClaw-compatible)
+    // ========================================================================
+
+    const memoryRuntime = createLanceDBMemoryRuntime({
+      retriever,
+      store,
+      embedder,
+      scopeManager,
+      dbPath: resolvedDbPath,
+    });
+
+    api.registerMemoryCapability({
+      promptBuilder: buildMemoryPromptSection,
+      runtime: memoryRuntime,
+    });
+
+    // ========================================================================
     // Register Knowledge Base Tools & Corpus Supplement
     // ========================================================================
 
@@ -391,6 +444,29 @@ const memoryLanceDBProPlugin = {
         retrievalConfig: knowledgeRetrievalConfig,
       });
 
+      // Register Memory Prompt Supplement (guidance for knowledge search)
+      api.registerMemoryPromptSupplement(({ availableTools, citationsMode }) => {
+        const hasKnowledgeSearch = availableTools.has("knowledge_search");
+        const hasMemorySearch = availableTools.has("memory_search");
+        if (!hasKnowledgeSearch && !hasMemorySearch) return [];
+
+        const lines = ["## Knowledge Base (LanceDB)", "Indexed Obsidian vault and documentation files for semantic search."];
+        if (hasMemorySearch) {
+          lines.push("Use `memory_search` with `corpus=all` to search both durable memory files and the indexed knowledge base in one pass.");
+          lines.push("Use `memory_search` with `corpus=wiki` to search only supplements (wiki + knowledge base), excluding memory files.");
+        }
+        if (hasKnowledgeSearch) {
+          lines.push("Use `knowledge_search` for direct access to the LanceDB-indexed knowledge base with detailed ranking info.");
+        }
+        if (citationsMode !== "off") {
+          lines.push("Citations: include Source: <path#Lline> when referencing knowledge snippets.");
+        } else {
+          lines.push("Citations are disabled: do not mention file paths or line numbers unless explicitly asked.");
+        }
+        lines.push("");
+        return lines;
+      });
+
       // Register MemoryCorpusSupplement (for OpenClaw's built-in memorySearch mechanism)
       api.registerMemoryCorpusSupplement({
         search: async (params) => {
@@ -407,20 +483,32 @@ const memoryLanceDBProPlugin = {
               limit
             );
 
-            return results.map((r) => ({
-              corpus: "knowledge",
-              path: r.chunk.filePath,
-              title: r.chunk.fileName,
-              kind: r.chunk.fileType,
-              score: r.score,
-              snippet: r.chunk.text.slice(0, 500),
-              id: r.chunk.id,
-              source: r.chunk.filePath,
-              provenanceLabel: "lancedb-pro",
-              sourceType: "indexed-file",
-              sourcePath: r.chunk.filePath,
-              updatedAt: new Date(r.chunk.timestamp).toISOString(),
-            }));
+            return results.map((r) => {
+              // Estimate line range based on chunk position and text length
+              const avgLineLength = 60;
+              const linesInChunk = Math.ceil(r.chunk.text.length / avgLineLength);
+              const startLine = r.chunk.chunkIndex * 15 + 1;
+              const endLine = startLine + linesInChunk - 1;
+              const citation = `${r.chunk.filePath}#L${startLine}-L${endLine}`;
+
+              return {
+                corpus: "knowledge",
+                path: r.chunk.filePath,
+                title: r.chunk.fileName,
+                kind: r.chunk.fileType,
+                score: r.score,
+                snippet: r.chunk.text.slice(0, 500),
+                id: r.chunk.id,
+                startLine,
+                endLine,
+                citation,
+                source: r.chunk.filePath,
+                provenanceLabel: "lancedb-pro",
+                sourceType: "indexed-file",
+                sourcePath: r.chunk.filePath,
+                updatedAt: new Date(r.chunk.timestamp).toISOString(),
+              };
+            });
           } catch (err) {
             console.warn(`[knowledge-corpus] search failed: ${err}`);
             return [];
@@ -457,17 +545,24 @@ const memoryLanceDBProPlugin = {
               .map((c) => c.chunk.text)
               .join("\n\n");
 
-            const fromLine = params.fromLine || 1;
-            const lineCount = params.lineCount || 100;
+            // Split into lines and apply fromLine/lineCount
+            const lines = combinedContent.split(/\r?\n/);
+            const totalLines = lines.length;
+            const fromLine = Math.max(1, params.fromLine || 1);
+            const lineCount = Math.max(1, params.lineCount || 200);
+            const contentSlice = lines.slice(fromLine - 1, fromLine - 1 + lineCount).join("\n");
+            const truncated = fromLine - 1 + lineCount < totalLines;
 
             return {
               corpus: "knowledge",
               path: lookupPath,
               title: sortedChunks[0]?.chunk.fileName,
               kind: sortedChunks[0]?.chunk.fileType,
-              content: combinedContent,
+              content: contentSlice,
               fromLine,
               lineCount,
+              totalLines,
+              truncated,
               id: sortedChunks[0]?.chunk.id,
               provenanceLabel: "lancedb-pro",
               sourceType: "indexed-file",

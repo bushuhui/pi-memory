@@ -65,6 +65,7 @@ export interface RetrievalContext {
   limit: number;
   scopeFilter?: string[];
   category?: string;
+  minScore?: number;
 }
 
 export interface RetrievalResult extends MemorySearchResult {
@@ -217,26 +218,28 @@ export class MemoryRetriever {
   ) {}
 
   async retrieve(context: RetrievalContext): Promise<RetrievalResult[]> {
-    const { query, limit, scopeFilter, category } = context;
+    const { query, limit, scopeFilter, category, minScore } = context;
     const safeLimit = clampInt(limit, 1, 20);
+    const effectiveMinScore = minScore ?? this.config.minScore;
 
     // For vector-only mode, use legacy behavior
     if (this.config.mode === "vector" || !this.store.hasFtsSupport) {
-      return this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category);
+      return this.vectorOnlyRetrieval(query, safeLimit, scopeFilter, category, effectiveMinScore);
     }
 
     // Hybrid retrieval with vector + BM25 + RRF fusion
-    return this.hybridRetrieval(query, safeLimit, scopeFilter, category);
+    return this.hybridRetrieval(query, safeLimit, scopeFilter, category, effectiveMinScore);
   }
 
   private async vectorOnlyRetrieval(
     query: string,
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    minScore?: number
   ): Promise<RetrievalResult[]> {
     const queryVector = await this.embedder.embedQuery(query);
-    const results = await this.store.vectorSearch(queryVector, limit, this.config.minScore, scopeFilter);
+    const results = await this.store.vectorSearch(queryVector, limit, minScore ?? this.config.minScore, scopeFilter);
 
     // Filter by category if specified
     const filtered = category
@@ -269,9 +272,11 @@ export class MemoryRetriever {
     query: string,
     limit: number,
     scopeFilter?: string[],
-    category?: string
+    category?: string,
+    minScore?: number
   ): Promise<RetrievalResult[]> {
     const candidatePoolSize = Math.max(this.config.candidatePoolSize, limit * 2);
+    const effectiveMinScore = minScore ?? this.config.minScore;
 
     // Compute query embedding once, reuse for vector search + reranking
     const queryVector = await this.embedder.embedQuery(query);
@@ -286,7 +291,7 @@ export class MemoryRetriever {
     const fusedResults = this.fuseResults(vectorResults, bm25Results);
 
     // Apply minimum score threshold
-    const filtered = fusedResults.filter(r => r.score >= this.config.minScore);
+    const filtered = fusedResults.filter(r => r.score >= effectiveMinScore);
 
     // Rerank if enabled
     const reranked = this.config.rerank !== "none"
