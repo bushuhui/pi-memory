@@ -3,7 +3,7 @@
  * Enhanced LanceDB-backed long-term memory with hybrid retrieval and multi-scope isolation
  */
 
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, MemoryCorpusSupplement } from "openclaw/plugin-sdk";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
 import { readFile, readdir, writeFile, mkdir } from "node:fs/promises";
@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 // Import core components
 import { MemoryStore } from "./src/store.js";
 import { createEmbedder, getVectorDimensions } from "./src/embedder.js";
-import { createRetriever, DEFAULT_RETRIEVAL_CONFIG } from "./src/retriever.js";
+import { createRetriever, DEFAULT_RETRIEVAL_CONFIG, RetrievalConfig } from "./src/retriever.js";
 import { createScopeManager } from "./src/scopes.js";
 import { createMigrator } from "./src/migrate.js";
 import { registerAllMemoryTools } from "./src/tools.js";
@@ -20,7 +20,7 @@ import { shouldSkipRetrieval } from "./src/adaptive-retrieval.js";
 import { createMemoryCLI } from "./cli.js";
 import { KnowledgeStore } from "./src/knowledge-store.js";
 import { KnowledgeIndexer } from "./src/knowledge-indexer.js";
-import { registerAllKnowledgeTools } from "./src/knowledge-tools.js";
+import { registerAllKnowledgeTools, hybridKnowledgeSearch } from "./src/knowledge-tools.js";
 
 // ============================================================================
 // Configuration & Types
@@ -363,12 +363,17 @@ const memoryLanceDBProPlugin = {
     );
 
     // ========================================================================
-    // Register Knowledge Base Tools
+    // Register Knowledge Base Tools & Corpus Supplement
     // ========================================================================
 
     if (knowledgePaths.length > 0) {
       console.log(`[knowledge] initializing with paths: ${knowledgePaths.join(", ")}`);
       const knowledgeStore = new KnowledgeStore(resolvedDbPath, vectorDim);
+      const knowledgeRetrievalConfig: RetrievalConfig = {
+        ...DEFAULT_RETRIEVAL_CONFIG,
+        ...config.retrieval,
+      };
+
       // Init is async — fire and forget, tools will wait if needed
       const knowledgeReady = knowledgeStore.init().then(() => {
         console.log(`[knowledge] store initialized`);
@@ -378,17 +383,105 @@ const memoryLanceDBProPlugin = {
 
       const indexer = new KnowledgeIndexer(knowledgeStore, embedder, knowledgePaths);
 
+      // Register Agent Tools (knowledge_search, knowledge_index, knowledge_stats)
       registerAllKnowledgeTools(api, {
         store: knowledgeStore,
         indexer,
         embedder,
-        retrievalConfig: {
-          ...DEFAULT_RETRIEVAL_CONFIG,
-          ...config.retrieval,
+        retrievalConfig: knowledgeRetrievalConfig,
+      });
+
+      // Register MemoryCorpusSupplement (for OpenClaw's built-in memorySearch mechanism)
+      api.registerMemoryCorpusSupplement({
+        search: async (params) => {
+          // Ensure store is initialized before searching
+          await knowledgeReady;
+
+          try {
+            const limit = params.maxResults || 5;
+            const results = await hybridKnowledgeSearch(
+              params.query,
+              knowledgeStore,
+              embedder,
+              knowledgeRetrievalConfig,
+              limit
+            );
+
+            return results.map((r) => ({
+              corpus: "knowledge",
+              path: r.chunk.filePath,
+              title: r.chunk.fileName,
+              kind: r.chunk.fileType,
+              score: r.score,
+              snippet: r.chunk.text.slice(0, 500),
+              id: r.chunk.id,
+              source: r.chunk.filePath,
+              provenanceLabel: "lancedb-pro",
+              sourceType: "indexed-file",
+              sourcePath: r.chunk.filePath,
+              updatedAt: new Date(r.chunk.timestamp).toISOString(),
+            }));
+          } catch (err) {
+            console.warn(`[knowledge-corpus] search failed: ${err}`);
+            return [];
+          }
+        },
+        get: async (params) => {
+          // Ensure store is initialized
+          await knowledgeReady;
+
+          try {
+            // lookup is expected to be a file path or chunk id
+            const lookupPath = params.lookup;
+
+            // Try to find the chunk by path
+            const allChunks = await knowledgeStore.vectorSearch(
+              new Array(vectorDim).fill(0), // dummy vector for listing
+              1000
+            );
+
+            const matchingChunks = allChunks.filter(
+              (c) => c.chunk.filePath === lookupPath || c.chunk.id === lookupPath
+            );
+
+            if (matchingChunks.length === 0) {
+              return null;
+            }
+
+            // Combine all chunks for this file into one content block
+            const sortedChunks = matchingChunks.sort(
+              (a, b) => a.chunk.chunkIndex - b.chunk.chunkIndex
+            );
+
+            const combinedContent = sortedChunks
+              .map((c) => c.chunk.text)
+              .join("\n\n");
+
+            const fromLine = params.fromLine || 1;
+            const lineCount = params.lineCount || 100;
+
+            return {
+              corpus: "knowledge",
+              path: lookupPath,
+              title: sortedChunks[0]?.chunk.fileName,
+              kind: sortedChunks[0]?.chunk.fileType,
+              content: combinedContent,
+              fromLine,
+              lineCount,
+              id: sortedChunks[0]?.chunk.id,
+              provenanceLabel: "lancedb-pro",
+              sourceType: "indexed-file",
+              sourcePath: lookupPath,
+              updatedAt: new Date(sortedChunks[0]?.chunk.timestamp).toISOString(),
+            };
+          } catch (err) {
+            console.warn(`[knowledge-corpus] get failed: ${err}`);
+            return null;
+          }
         },
       });
 
-      console.log(`[knowledge] tools registered for ${knowledgePaths.length} path(s)`);
+      console.log(`[knowledge] tools + corpus supplement registered for ${knowledgePaths.length} path(s)`);
     }
 
     // ========================================================================
@@ -411,8 +504,9 @@ const memoryLanceDBProPlugin = {
     // ========================================================================
 
     // Auto-recall: inject relevant memories before agent starts
+    // Migrated from legacy before_agent_start → before_prompt_build (2026-04-17)
     if (config.autoRecall !== false) {
-      api.on("before_agent_start", async (event, ctx) => {
+      api.on("before_prompt_build", async (event, ctx) => {
         if (!event.prompt || shouldSkipRetrieval(event.prompt)) {
           return;
         }

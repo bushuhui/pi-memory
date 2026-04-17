@@ -281,9 +281,7 @@ function applyMMRDiversity(results: ScoredChunk[], threshold = 0.85): ScoredChun
   return [...selected, ...deferred];
 }
 
-// ============================================================================
-// Tool Registration
-// ============================================================================
+export { hybridKnowledgeSearch };
 
 export function registerAllKnowledgeTools(
   api: OpenClawPluginApi,

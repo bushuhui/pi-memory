@@ -4,13 +4,17 @@
  */
 
 import { Type } from "@sinclair/typebox";
-import { stringEnum } from "openclaw/plugin-sdk";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { MemoryRetriever, RetrievalResult } from "./retriever.js";
 import type { MemoryStore } from "./store.js";
 import { isNoise } from "./noise-filter.js";
 import type { MemoryScopeManager } from "./scopes.js";
 import type { Embedder } from "./embedder.js";
+
+// Local stringEnum implementation (not available in plugin-sdk)
+function stringEnum<T extends string[]>(values: [...T]) {
+  return Type.Union(values.map(v => Type.Literal(v)));
+}
 
 // ============================================================================
 // Types
