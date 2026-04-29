@@ -1,26 +1,26 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro · OpenClaw Plugin
+# 🧠 pi-memory · OpenClaw Plugin
 
-**Enhanced Long-Term Memory Plugin for [OpenClaw](https://github.com/openclaw/openclaw)**
+**[OpenClaw](https://github.com/openclaw/openclaw) 增强型 LanceDB 长期记忆插件**
 
-Hybrid Retrieval (Vector + BM25) · Cross-Encoder Rerank · Multi-Scope Isolation · Management CLI
+混合检索（Vector + BM25）· 跨编码器 Rerank · 多 Scope 隔离 · 管理 CLI · 独立 HTTP/MCP Server
 
 [![OpenClaw Plugin](https://img.shields.io/badge/OpenClaw-Plugin-blue)](https://github.com/openclaw/openclaw)
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**English** | [简体中文](README_CN.md)
+[English](README.md) | **简体中文**
 
 </div>
 
 ---
 
-## 📺 Video Tutorial
+## 📺 视频教程
 
-> **Watch the full walkthrough — covers installation, configuration, and how hybrid retrieval works under the hood.**
+> **观看完整教程 — 涵盖安装、配置，以及混合检索的底层原理。**
 
-[![YouTube Video](https://img.shields.io/badge/YouTube-Watch%20Now-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
+[![YouTube Video](https://img.shields.io/badge/YouTube-立即观看-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
 🔗 **https://youtu.be/MtukF1C8epQ**
 
 [![Bilibili Video](https://img.shields.io/badge/Bilibili-立即观看-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1zUf2BGEgn/)
@@ -28,36 +28,40 @@ Hybrid Retrieval (Vector + BM25) · Cross-Encoder Rerank · Multi-Scope Isolatio
 
 ---
 
-## Why This Plugin?
+## 为什么需要这个插件？
 
-The built-in `memory-lancedb` plugin in OpenClaw provides basic vector search. **memory-lancedb-pro** takes it much further:
+OpenClaw 内置的 `memory-lancedb` 插件仅提供基本的向量搜索。**pi-memory** 在此基础上进行了全面升级：
 
-| Feature | Built-in `memory-lancedb` | **memory-lancedb-pro** |
-|---------|--------------------------|----------------------|
-| Vector search | ✅ | ✅ |
-| BM25 full-text search | ❌ | ✅ |
-| Hybrid fusion (Vector + BM25) | ❌ | ✅ |
-| Cross-encoder rerank (Jina / custom endpoint) | ❌ | ✅ |
-| Recency boost | ❌ | ✅ |
-| Time decay | ❌ | ✅ |
-| Length normalization | ❌ | ✅ |
-| MMR diversity | ❌ | ✅ |
-| Multi-scope isolation | ❌ | ✅ |
-| Noise filtering | ❌ | ✅ |
-| Adaptive retrieval | ❌ | ✅ |
-| Management CLI | ❌ | ✅ |
-| Session memory | ❌ | ✅ |
-| Task-aware embeddings | ❌ | ✅ |
-| Any OpenAI-compatible embedding | Limited | ✅ (OpenAI, Gemini, Jina, Ollama, etc.) |
+| 功能 | 内置 `memory-lancedb` | **pi-memory** |
+|------|----------------------|----------------------|
+| 向量搜索 | ✅ | ✅ |
+| BM25 全文检索 | ❌ | ✅ |
+| 混合融合（Vector + BM25） | ❌ | ✅ |
+| 跨编码器 Rerank（Jina） | ❌ | ✅ |
+| 时效性加成 | ❌ | ✅ |
+| 时间衰减 | ❌ | ✅ |
+| 长度归一化 | ❌ | ✅ |
+| MMR 多样性去重 | ❌ | ✅ |
+| 多 Scope 隔离 | ❌ | ✅ |
+| 噪声过滤 | ❌ | ✅ |
+| 自适应检索 | ❌ | ✅ |
+| 管理 CLI | ❌ | ✅ |
+| Session 记忆 | ❌ | ✅ |
+| Task-aware Embedding | ❌ | ✅ |
+| 任意 OpenAI 兼容 Embedding | 有限 | ✅（OpenAI、Gemini、Jina、Ollama 等） |
+| **独立 HTTP Server** | ❌ | ✅（REST API + MCP Server，单端口） |
+| **外部系统集成** | ❌ | ✅（Hermes Agent、Claude Code、任意脚本） |
 
 ---
 
-## Architecture
+## 架构概览
+
+### OpenClaw 插件模式
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                   index.ts (Entry Point)                │
-│  Plugin Registration · Config Parsing · Lifecycle Hooks │
+│                   index.ts (入口)                        │
+│  插件注册 · 配置解析 · 生命周期钩子 · 自动捕获/回忆       │
 └────────┬──────────┬──────────┬──────────┬───────────────┘
          │          │          │          │
     ┌────▼───┐ ┌────▼───┐ ┌───▼────┐ ┌──▼──────────┐
@@ -76,153 +80,318 @@ The built-in `memory-lancedb` plugin in OpenClaw provides basic vector search. *
     └─────────────┘   └──────────┘
 ```
 
-### File Reference
+### 独立 HTTP/MCP Server 模式
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Plugin entry point. Registers with OpenClaw Plugin API, parses config, mounts `before_agent_start` (auto-recall), `agent_end` (auto-capture), and `command:new` (session memory) hooks |
-| `openclaw.plugin.json` | Plugin metadata + full JSON Schema config declaration (with `uiHints`) |
-| `package.json` | NPM package info. Depends on `@lancedb/lancedb`, `openai`, `@sinclair/typebox` |
-| `cli.ts` | CLI commands: `memory list/search/stats/delete/delete-bulk/export/import/reembed/migrate` |
-| `src/store.ts` | LanceDB storage layer. Table creation / FTS indexing / Vector search / BM25 search / CRUD / bulk delete / stats |
-| `src/embedder.ts` | Embedding abstraction. Compatible with any OpenAI-API provider (OpenAI, Gemini, Jina, Ollama, etc.). Supports task-aware embedding (`taskQuery`/`taskPassage`) |
-| `src/retriever.ts` | Hybrid retrieval engine. Vector + BM25 → RRF fusion → Jina Cross-Encoder Rerank → Recency Boost → Importance Weight → Length Norm → Time Decay → Hard Min Score → Noise Filter → MMR Diversity |
-| `src/scopes.ts` | Multi-scope access control. Supports `global`, `agent:<id>`, `custom:<name>`, `project:<id>`, `user:<id>` |
-| `src/tools.ts` | Agent tool definitions: `memory_recall`, `memory_store`, `memory_forget` (core) + `memory_stats`, `memory_list` (management) |
-| `src/noise-filter.ts` | Noise filter. Filters out agent refusals, meta-questions, greetings, and low-quality content |
-| `src/adaptive-retrieval.ts` | Adaptive retrieval. Determines whether a query needs memory retrieval (skips greetings, slash commands, simple confirmations, emoji) |
-| `src/migrate.ts` | Migration tool. Migrates data from the built-in `memory-lancedb` plugin to Pro |
+```
+┌──────────────────────────────────────────────────────┐
+│                  pi-memory-server                     │
+│              (单进程 · 单端口 · 9873)                  │
+│                                                      │
+│  ┌─────────────┐    ┌──────────────┐                 │
+│  │  REST API   │    │  MCP Server  │                 │
+│  │   (router)  │    │  /mcp (SSE)  │                 │
+│  └──────┬──────┘    └──────┬───────┘                 │
+│         │                  │                         │
+│    ┌────▼────┐   ┌─────────▼────────┐                │
+│    │middleware│   │StreamableHTTP    │                │
+│    │(auth/CORS)│  │Transport(无状态)  │                │
+│    └────┬─────┘   └────────┬─────────┘                │
+│         │                  │                         │
+│    ┌────▼────┐   ┌─────────▼────────┐                │
+│    │ memory   │   │ knowledge        │                │
+│    │ API      │   │ API              │                │
+│    └────┬─────┘   └────────┬─────────┘                │
+│         │                  │                         │
+│    ┌────▼──────────────────▼─────────┐               │
+│    │        server-bootstrap.ts       │               │
+│    │  (embedder · store · retriever   │               │
+│    │   · knowledgeStore · indexer)    │               │
+│    └──────────────────────────────────┘               │
+└──────────────────────────────────────────────────────┘
+         │                          │
+   ┌─────▼─────┐           ┌────────▼────────┐
+   │ Hermes    │           │ Claude Code     │
+   │ Agent     │           │ / 任意脚本      │
+   └───────────┘           └─────────────────┘
+```
+
+### 文件说明
+
+| 文件 | 用途 |
+|------|------|
+| `index.ts` | 插件入口。注册到 OpenClaw Plugin API，解析配置，挂载 `before_agent_start`（自动回忆）、`agent_end`（自动捕获）、`command:new`（Session 记忆）等钩子 |
+| `openclaw.plugin.json` | 插件元数据 + 完整 JSON Schema 配置声明（含 `uiHints`） |
+| `package.json` | NPM 包信息，依赖 `@lancedb/lancedb`、`openai`、`@sinclair/typebox`、`@modelcontextprotocol/sdk` |
+| `cli.ts` | CLI 命令实现：`memory list/search/stats/delete/delete-bulk/export/import/reembed/migrate` |
+| `src/store.ts` | LanceDB 存储层。表创建 / FTS 索引 / Vector Search / BM25 Search / CRUD / 批量删除 / 统计 |
+| `src/embedder.ts` | Embedding 抽象层。兼容 OpenAI API 的任意 Provider（OpenAI、Gemini、Jina、Ollama 等），支持 task-aware embedding（`taskQuery`/`taskPassage`） |
+| `src/retriever.ts` | 混合检索引擎。Vector + BM25 → RRF 融合 → Jina Cross-Encoder Rerank → Recency Boost → Importance Weight → Length Norm → Time Decay → Hard Min Score → Noise Filter → MMR Diversity |
+| `src/scopes.ts` | 多 Scope 访问控制。支持 `global`、`agent:<id>`、`custom:<name>`、`project:<id>`、`user:<id>` 等 Scope 模式 |
+| `src/tools.ts` | Agent 工具定义：`memory_recall`、`memory_store`、`memory_forget`（核心）+ `memory_stats`、`memory_list`（管理） |
+| `src/knowledge-store.ts` | 知识库存储层。LanceDB 知识库表、FTS 索引、向量搜索 |
+| `src/knowledge-indexer.ts` | 知识库索引器。扫描目录、分块、向量化、增量索引 |
+| `src/knowledge-tools.ts` | 知识库工具定义：`knowledge_search`、`knowledge_index`、`knowledge_stats` |
+| `src/noise-filter.ts` | 噪声过滤器。过滤 Agent 拒绝回复、Meta 问题、寒暄等低质量记忆 |
+| `src/adaptive-retrieval.ts` | 自适应检索。判断 query 是否需要触发记忆检索（跳过问候、命令、简单确认等） |
+| `src/migrate.ts` | 迁移工具。从旧版 `memory-lancedb` 插件迁移数据到 Pro 版 |
+| `src/server-config.ts` | 服务器配置加载器。4 层优先级：CLI > 环境变量 > openclaw.json > 默认值 |
+| `src/server-response.ts` | HTTP 响应辅助函数。统一 JSON 响应格式 |
+| `src/server-middleware.ts` | HTTP 中间件。API Key 认证、CORS、请求日志 |
+| `src/server-router.ts` | 轻量级 HTTP 路由器。方法+路径匹配、URL 参数提取 |
+| `src/server.ts` | 统一 HTTP 服务器。REST API + MCP StreamableHTTP，单端口共享 |
+| `src/server-bootstrap.ts` | 服务器启动引导。组件初始化（embedder → store → retriever → knowledge → server） |
+| `scripts/pi-memory-server.ts` | CLI 入口脚本。独立服务器启动入口，支持 `--port`/`--host`/`--api-key`/`--no-http`/`--no-mcp` 等参数 |
 
 ---
 
-## Core Features
+## 核心特性
 
-### 1. Hybrid Retrieval
+### 1. 混合检索 (Hybrid Retrieval)
 
 ```
 Query → embedQuery() ─┐
-                       ├─→ RRF Fusion → Rerank → Recency Boost → Importance Weight → Filter
+                       ├─→ RRF 融合 → Rerank → 时效加成 → 重要性加权 → 过滤
 Query → BM25 FTS ─────┘
 ```
 
-- **Vector Search**: Semantic similarity via LanceDB ANN (cosine distance)
-- **BM25 Full-Text Search**: Exact keyword matching via LanceDB FTS index
-- **Fusion Strategy**: Vector score as base, BM25 hits get a 15% boost (tuned beyond traditional RRF)
-- **Configurable Weights**: `vectorWeight`, `bm25Weight`, `minScore`
+- **向量搜索**: 语义相似度搜索（cosine distance via LanceDB ANN）
+- **BM25 全文搜索**: 关键词精确匹配（LanceDB FTS 索引）
+- **融合策略**: Vector score 为基础，BM25 命中给予 15% 加成（非传统 RRF，经过调优）
+- **可配置权重**: `vectorWeight`、`bm25Weight`、`minScore`
 
-### 2. Cross-Encoder Reranking
+### 2. 跨编码器 Rerank
 
-- **Reranker API**: Jina, SiliconFlow, Pinecone, or any compatible endpoint (5s timeout protection)
-- **Hybrid Scoring**: 60% cross-encoder score + 40% original fused score
-- **Graceful Degradation**: Falls back to cosine similarity reranking on API failure
+- **Jina Reranker API**: `jina-reranker-v2-base-multilingual`（5s 超时保护）
+- **混合评分**: 60% cross-encoder score + 40% 原始融合分
+- **降级策略**: API 失败时回退到 cosine similarity rerank
 
-### 3. Multi-Stage Scoring Pipeline
+### 3. 多层评分管线
 
-| Stage | Formula | Effect |
-|-------|---------|--------|
-| **Recency Boost** | `exp(-ageDays / halfLife) * weight` | Newer memories score higher (default: 14-day half-life, 0.10 weight) |
-| **Importance Weight** | `score *= (0.7 + 0.3 * importance)` | importance=1.0 → ×1.0, importance=0.5 → ×0.85 |
-| **Length Normalization** | `score *= 1 / (1 + 0.5 * log2(len/anchor))` | Prevents long entries from dominating (anchor: 500 chars) |
-| **Time Decay** | `score *= 0.5 + 0.5 * exp(-ageDays / halfLife)` | Old entries gradually lose weight, floor at 0.5× (60-day half-life) |
-| **Hard Min Score** | Discard if `score < threshold` | Removes irrelevant results (default: 0.35) |
-| **MMR Diversity** | Cosine similarity > 0.85 → demoted | Prevents near-duplicate results |
+| 阶段 | 公式 | 效果 |
+|------|------|------|
+| **时效加成** | `exp(-ageDays / halfLife) * weight` | 新记忆分数更高（默认半衰期 14 天，权重 0.10） |
+| **重要性加权** | `score *= (0.7 + 0.3 * importance)` | importance=1.0 → ×1.0，importance=0.5 → ×0.85 |
+| **长度归一化** | `score *= 1 / (1 + 0.5 * log2(len/anchor))` | 防止长条目凭关键词密度霸占所有查询（锚点：500 字符） |
+| **时间衰减** | `score *= 0.5 + 0.5 * exp(-ageDays / halfLife)` | 旧条目逐渐降权，下限 0.5×（60 天半衰期） |
+| **硬最低分** | 低于阈值直接丢弃 | 移除不相关结果（默认 0.35） |
+| **MMR 多样性** | cosine 相似度 > 0.85 → 降级 | 防止近似重复结果 |
 
-### 4. Multi-Scope Isolation
+### 4. 多 Scope 隔离
 
-- **Built-in Scopes**: `global`, `agent:<id>`, `custom:<name>`, `project:<id>`, `user:<id>`
-- **Agent-Level Access Control**: Configure per-agent scope access via `scopes.agentAccess`
-- **Default Behavior**: Each agent accesses `global` + its own `agent:<id>` scope
+- **内置 Scope 模式**: `global`、`agent:<id>`、`custom:<name>`、`project:<id>`、`user:<id>`
+- **Agent 级访问控制**: 通过 `scopes.agentAccess` 配置每个 Agent 可访问的 Scope
+- **默认行为**: Agent 可访问 `global` + 自己的 `agent:<id>` Scope
 
-### 5. Adaptive Retrieval
+### 5. 自适应检索
 
-- Skips queries that don't need memory (greetings, slash commands, simple confirmations, emoji)
-- Forces retrieval for memory-related keywords ("remember", "previously", "last time", etc.)
-- CJK-aware thresholds (Chinese: 6 chars vs English: 15 chars)
+- 跳过不需要记忆的 query（问候、slash 命令、简单确认、emoji）
+- 强制检索含记忆相关关键词的 query（"remember"、"之前"、"上次"等）
+- 支持 CJK 字符的更低阈值（中文 6 字符 vs 英文 15 字符）
 
-### 6. Noise Filtering
+### 6. 噪声过滤
 
-Filters out low-quality content at both auto-capture and tool-store stages:
-- Agent refusal responses ("I don't have any information")
-- Meta-questions ("do you remember")
-- Greetings ("hi", "hello", "HEARTBEAT")
+在自动捕获和工具存储阶段同时生效：
+- 过滤 Agent 拒绝回复（"I don't have any information"）
+- 过滤 Meta 问题（"do you remember"）
+- 过滤寒暄（"hi"、"hello"、"HEARTBEAT"）
 
-### 7. Session Memory
+### 7. Session 记忆
 
-- Triggered on `/new` command — saves previous session summary to LanceDB
-- Disabled by default (OpenClaw already has native `.jsonl` session persistence)
-- Configurable message count (default: 15)
+- `/new` 命令触发时可保存上一个 Session 的对话摘要到 LanceDB
+- 默认关闭（`enabled: false`），因为 OpenClaw 已有原生 .jsonl 会话保存
+- 开启会导致大段摘要污染检索质量，建议仅在需要语义搜索历史会话时开启
+- 可配置消息数量（默认 15 条）
 
-### 8. Auto-Capture & Auto-Recall
+### 8. 自动捕获 & 自动回忆
 
-- **Auto-Capture** (`agent_end` hook): Extracts preference/fact/decision/entity from conversations, deduplicates, stores up to 3 per turn
-- **Auto-Recall** (`before_agent_start` hook): Injects `<relevant-memories>` context (up to 3 entries)
+- **Auto-Capture**（`agent_end` hook）: 从对话中提取 preference/fact/decision/entity，去重后存储（每次最多 3 条）
+- **Auto-Recall**（`before_agent_start` hook）: 注入 `<relevant-memories>` 上下文（最多 3 条）
+
+### 9. 独立 HTTP Server + MCP Server
+
+v1.2.0 新增：pi-memory 可作为独立 HTTP/MCP 服务运行，无需通过 OpenClaw Gateway。外部系统（Hermes Agent、Claude Code、任意脚本）可通过 REST API 或 MCP 协议调用知识库检索和记忆管理功能。
+
+#### 9.1 启动
+
+```bash
+# 使用默认配置启动（端口 9873）
+pi-memory-server
+
+# 或通过 npm script
+npm run server
+
+# 指定端口和主机
+pi-memory-server --port 9873 --host 0.0.0.0
+
+# 仅启用 REST API（禁用 MCP）
+pi-memory-server --no-mcp
+
+# 仅启用 MCP（禁用 REST API）
+pi-memory-server --no-http
+
+# 启用 API Key 认证
+pi-memory-server --api-key your-secret-key
+```
+
+#### 9.2 配置加载
+
+配置直接从 `~/.openclaw/openclaw.json` 中读取（`plugins.entries["pi-memory"].config`），与 OpenClaw 插件使用同一份配置。
+
+优先级：**CLI 参数 > 环境变量 > openclaw.json > 内置默认**
+
+| 环境变量 | 说明 |
+|----------|------|
+| `PI_MEMORY_EMBED_API_KEY` | Embedding API Key |
+| `PI_MEMORY_EMBED_BASE_URL` | Embedding Base URL |
+| `PI_MEMORY_EMBED_MODEL` | Embedding 模型名 |
+| `PI_MEMORY_EMBED_DIMENSIONS` | Embedding 维度 |
+| `PI_MEMORY_DB_PATH` | 数据库路径 |
+| `PI_MEMORY_API_KEY` | HTTP 服务 API Key |
+| `PI_MEMORY_HTTP_HOST` | HTTP 监听地址 |
+| `PI_MEMORY_HTTP_PORT` | HTTP 监听端口 |
+| `PI_MEMORY_KNOWLEDGE_PATHS` | 知识库路径（JSON 数组） |
+| `PI_MEMORY_RERANK_API_KEY` | Reranker API Key |
+| `PI_MEMORY_RERANK_MODEL` | Reranker 模型 |
+| `PI_MEMORY_RERANK_ENDPOINT` | Reranker 端点 |
+| `PI_MEMORY_RERANK_PROVIDER` | Reranker 提供商 |
+
+#### 9.3 REST API 端点
+
+**健康检查：**
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `GET` | `/health` | 服务状态、版本、内存使用 |
+
+**记忆管理（`/api/memory`）：**
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `POST` | `/api/memory/search` | 搜索记忆（混合检索） |
+| `POST` | `/api/memory/store` | 存储新记忆 |
+| `GET` | `/api/memory/list` | 列出记忆（分页） |
+| `GET` | `/api/memory/stats` | 记忆统计信息 |
+| `DELETE` | `/api/memory/:id` | 删除记忆 |
+| `PATCH` | `/api/memory/:id` | 更新记忆 |
+
+**知识库（`/api/knowledge`）：**
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| `POST` | `/api/knowledge/search` | 搜索知识库（混合检索） |
+| `POST` | `/api/knowledge/index` | 重建知识库索引 |
+| `GET` | `/api/knowledge/stats` | 知识库统计信息 |
+
+所有 POST 请求体为 JSON 格式，响应统一为 `{ "success": true/false, "data": {...}, "error": "..." }`。
+
+#### 9.4 MCP Server（Streamable HTTP Transport）
+
+MCP Server 与 REST API 共享同一进程和端口，通过 `/mcp` 端点提供服务。使用 MCP 2024-11-05 协议，Streamable HTTP 传输（SSE 的继任者），无状态模式。
+
+**可用工具：**
+
+| 工具名 | 说明 |
+|--------|------|
+| `memory_search` | 搜索记忆（混合检索：Vector + BM25 + Rerank） |
+| `memory_store` | 存储新记忆 |
+| `memory_forget` | 删除记忆 |
+| `knowledge_search` | 搜索知识库 |
+| `knowledge_index` | 重建知识库索引 |
+
+**客户端连接示例：**
+
+```bash
+# MCP 客户端 POST 到 /mcp 端点
+curl -X POST http://localhost:9873/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"my-client","version":"1.0"}}}'
+```
+
+#### 9.5 集成示例
+
+**Hermes Agent 调用记忆搜索：**
+
+```bash
+curl -X POST http://localhost:9873/api/memory/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "用户偏好设置", "limit": 5}'
+```
+
+**Hermes Agent 调用知识库搜索：**
+
+```bash
+curl -X POST http://localhost:9873/api/knowledge/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Claude Code 配置", "limit": 5}'
+```
 
 ---
 
-## Installation
+## 安装
 
-### AI-safe install notes (anti-hallucination)
+### AI 安装指引（防幻觉版）
 
-If you are following this README using an AI assistant, **do not assume defaults**. Always run these commands first and use the real output:
+如果你是用 AI 按 README 操作，**不要假设任何默认值**。请先运行以下命令，并以真实输出为准：
 
 ```bash
 openclaw config get agents.defaults.workspace
 openclaw config get plugins.load.paths
 openclaw config get plugins.slots.memory
-openclaw config get plugins.entries.memory-lancedb-pro
+openclaw config get plugins.entries.pi-memory
 ```
 
-Recommendations:
-- Prefer **absolute paths** in `plugins.load.paths` unless you have confirmed the active workspace.
-- If you use `${JINA_API_KEY}` (or any `${...}` variable) in config, ensure the **Gateway service process** has that environment variable (system services often do **not** inherit your interactive shell env).
-- After changing plugin config, run `openclaw gateway restart`.
+建议：
+- `plugins.load.paths` 建议优先用**绝对路径**（除非你已确认当前 workspace）。
+- 如果配置里使用 `${JINA_API_KEY}`（或任何 `${...}` 变量），务必确保运行 Gateway 的**服务进程环境**里真的有这些变量（systemd/launchd/docker 通常不会继承你终端的 export）。
+- 修改插件配置后，运行 `openclaw gateway restart` 使其生效。
 
-### Jina API keys (embedding + rerank)
+### Jina API Key（Embedding + Rerank）如何填写
 
-- **Embedding**: set `embedding.apiKey` to your Jina key (recommended: use an env var like `${JINA_API_KEY}`).
-- **Rerank** (when `retrieval.rerankProvider: "jina"`): you can typically use the **same** Jina key for `retrieval.rerankApiKey`.
-- If you use a different rerank provider (`siliconflow`, `pinecone`, etc.), `retrieval.rerankApiKey` should be that provider’s key.
+- **Embedding**：将 `embedding.apiKey` 设置为你的 Jina key（推荐用环境变量 `${JINA_API_KEY}`）。
+- **Rerank**（当 `retrieval.rerankProvider: "jina"`）：通常可以直接复用同一个 Jina key，填到 `retrieval.rerankApiKey`。
+- 如果你选择了其它 rerank provider（如 `siliconflow` / `pinecone`），则 `retrieval.rerankApiKey` 应填写对应提供商的 key。
 
-Key storage guidance:
-- Avoid committing secrets into git.
-- Using `${...}` env vars is fine, but make sure the **Gateway service process** has those env vars (system services often do not inherit your interactive shell environment).
+Key 存储建议：
+- 不要把 key 提交到 git。
+- 使用 `${...}` 环境变量没问题，但务必确保运行 Gateway 的**服务进程环境**里真的有该变量（systemd/launchd/docker 往往不会继承你终端的 export）。
 
-### What is the “OpenClaw workspace”?
+### 什么是 “OpenClaw workspace”？
 
-In OpenClaw, the **agent workspace** is the agent’s working directory (default: `~/.openclaw/workspace`).
-According to the docs, the workspace is the **default cwd**, and **relative paths are resolved against the workspace** (unless you use an absolute path).
+在 OpenClaw 中，**agent workspace（工作区）** 是 Agent 的工作目录（默认：`~/.openclaw/workspace`）。
+根据官方文档，workspace 是 OpenClaw 的 **默认工作目录（cwd）**，因此 **相对路径会以 workspace 为基准解析**（除非你使用绝对路径）。
 
-> Note: OpenClaw configuration typically lives under `~/.openclaw/openclaw.json` (separate from the workspace).
+> 说明：OpenClaw 的配置文件通常在 `~/.openclaw/openclaw.json`，与 workspace 是分开的。
 
-**Common mistake:** cloning the plugin somewhere else, while keeping a **relative path** like `plugins.load.paths: ["plugins/memory-lancedb-pro"]`. Relative paths can be resolved against different working directories depending on how the Gateway is started.
+**最常见的安装错误：** 把插件 clone 到别的目录，但在配置里仍然写类似 `"paths": ["plugins/pi-memory"]` 的**相对路径**。相对路径的解析基准会受 Gateway 启动方式/工作目录影响，容易指向错误位置。
 
-To avoid ambiguity, use an **absolute path** (Option B) or clone into `<workspace>/plugins/` (Option A) and keep your config consistent.
+为避免歧义：建议用**绝对路径**（方案 B），或把插件放在 `<workspace>/plugins/`（方案 A）并保持配置一致。
 
-### Option A (recommended): clone into `plugins/` under your workspace
+### 方案 A（推荐）：克隆到 workspace 的 `plugins/` 目录下
 
 ```bash
-# 1) Go to your OpenClaw workspace (default: ~/.openclaw/workspace)
-#    (You can override it via agents.defaults.workspace.)
+# 1) 进入你的 OpenClaw workspace（默认：~/.openclaw/workspace）
+#    （可通过 agents.defaults.workspace 改成你自己的路径）
 cd /path/to/your/openclaw/workspace
 
-# 2) Clone the plugin into workspace/plugins/
-git clone https://github.com/win4r/memory-lancedb-pro.git plugins/memory-lancedb-pro
+# 2) 把插件克隆到 workspace/plugins/ 下
+git clone https://github.com/win4r/pi-memory.git plugins/pi-memory
 
-# 3) Install dependencies
-cd plugins/memory-lancedb-pro
+# 3) 安装依赖
+cd plugins/pi-memory
 npm install
 ```
 
-Then reference it with a relative path in your OpenClaw config:
+然后在 OpenClaw 配置（`openclaw.json`）中使用相对路径：
 
 ```json
 {
   "plugins": {
     "load": {
-      "paths": ["plugins/memory-lancedb-pro"]
+      "paths": ["plugins/pi-memory"]
     },
     "entries": {
-      "memory-lancedb-pro": {
+      "pi-memory": {
         "enabled": true,
         "config": {
           "embedding": {
@@ -238,60 +407,60 @@ Then reference it with a relative path in your OpenClaw config:
       }
     },
     "slots": {
-      "memory": "memory-lancedb-pro"
+      "memory": "pi-memory"
     }
   }
 }
 ```
 
-### Option B: clone anywhere, but use an absolute path
+### 方案 B：插件装在任意目录，但配置里必须写绝对路径
 
 ```json
 {
   "plugins": {
     "load": {
-      "paths": ["/absolute/path/to/memory-lancedb-pro"]
+      "paths": ["/absolute/path/to/pi-memory"]
     }
   }
 }
 ```
 
-### Restart
+### 重启
 
 ```bash
 openclaw gateway restart
 ```
 
-> **Note:** If you previously used the built-in `memory-lancedb`, disable it when enabling this plugin. Only one memory plugin can be active at a time.
+> **注意：** 如果之前使用了内置的 `memory-lancedb`，启用本插件时需同时禁用它。同一时间只能有一个 memory 插件处于活动状态。
 
-### Verify installation (recommended)
+### 验证是否安装成功（推荐）
 
-1) Confirm the plugin is discoverable/loaded:
+1）确认插件已被发现/加载：
 
 ```bash
 openclaw plugins list
-openclaw plugins info memory-lancedb-pro
+openclaw plugins info pi-memory
 ```
 
-2) If anything looks wrong, run the built-in diagnostics:
+2）如果发现异常，运行插件诊断：
 
 ```bash
 openclaw plugins doctor
 ```
 
-3) Confirm the memory slot points to this plugin:
+3）确认 memory slot 已指向本插件：
 
 ```bash
-# Look for: plugins.slots.memory = "memory-lancedb-pro"
+# 期望看到：plugins.slots.memory = "pi-memory"
 openclaw config get plugins.slots.memory
 ```
 
 ---
 
-## Configuration
+## 配置
 
 <details>
-<summary><strong>Full Configuration Example (click to expand)</strong></summary>
+<summary><strong>完整配置示例（点击展开）</strong></summary>
 
 ```json
 {
@@ -315,8 +484,6 @@ openclaw config get plugins.slots.memory
     "rerank": "cross-encoder",
     "rerankApiKey": "${JINA_API_KEY}",
     "rerankModel": "jina-reranker-v2-base-multilingual",
-    "rerankEndpoint": "https://api.jina.ai/v1/rerank",
-    "rerankProvider": "jina",
     "candidatePoolSize": 20,
     "recencyHalfLifeDays": 14,
     "recencyWeight": 0.1,
@@ -329,8 +496,8 @@ openclaw config get plugins.slots.memory
   "scopes": {
     "default": "global",
     "definitions": {
-      "global": { "description": "Shared knowledge" },
-      "agent:discord-bot": { "description": "Discord bot private" }
+      "global": { "description": "共享知识库" },
+      "agent:discord-bot": { "description": "Discord 机器人私有" }
     },
     "agentAccess": {
       "discord-bot": ["global", "agent:discord-bot"]
@@ -345,106 +512,50 @@ openclaw config get plugins.slots.memory
 
 </details>
 
-### Embedding Providers
+### Embedding 提供商
 
-This plugin works with **any OpenAI-compatible embedding API**:
+本插件支持 **任意 OpenAI 兼容的 Embedding API**：
 
-| Provider | Model | Base URL | Dimensions |
-|----------|-------|----------|------------|
-| **Jina** (recommended) | `jina-embeddings-v5-text-small` | `https://api.jina.ai/v1` | 1024 |
+| 提供商 | 模型 | Base URL | 维度 |
+|--------|------|----------|------|
+| **Jina**（推荐） | `jina-embeddings-v5-text-small` | `https://api.jina.ai/v1` | 1024 |
 | **OpenAI** | `text-embedding-3-small` | `https://api.openai.com/v1` | 1536 |
 | **Google Gemini** | `gemini-embedding-001` | `https://generativelanguage.googleapis.com/v1beta/openai/` | 3072 |
-| **Ollama** (local) | `nomic-embed-text` | `http://localhost:11434/v1` | _provider-specific_ (set `embedding.dimensions` to match your Ollama model output) |
-
-### Rerank Providers
-
-Cross-encoder reranking supports multiple providers via `rerankProvider`:
-
-| Provider | `rerankProvider` | Endpoint | Example Model |
-|----------|-----------------|----------|---------------|
-| **Jina** (default) | `jina` | `https://api.jina.ai/v1/rerank` | `jina-reranker-v2-base-multilingual` |
-| **SiliconFlow** (free tier available) | `siliconflow` | `https://api.siliconflow.com/v1/rerank` | `BAAI/bge-reranker-v2-m3`, `Qwen/Qwen3-Reranker-8B` |
-| **Pinecone** | `pinecone` | `https://api.pinecone.io/rerank` | `bge-reranker-v2-m3` |
-
-<details>
-<summary><strong>SiliconFlow Example</strong></summary>
-
-```json
-{
-  "retrieval": {
-    "rerank": "cross-encoder",
-    "rerankProvider": "siliconflow",
-    "rerankEndpoint": "https://api.siliconflow.com/v1/rerank",
-    "rerankApiKey": "sk-xxx",
-    "rerankModel": "BAAI/bge-reranker-v2-m3"
-  }
-}
-```
-
-</details>
-
-<details>
-<summary><strong>Pinecone Example</strong></summary>
-
-```json
-{
-  "retrieval": {
-    "rerank": "cross-encoder",
-    "rerankProvider": "pinecone",
-    "rerankEndpoint": "https://api.pinecone.io/rerank",
-    "rerankApiKey": "pcsk_xxx",
-    "rerankModel": "bge-reranker-v2-m3"
-  }
-}
-```
-
-</details>
+| **Ollama**（本地） | `nomic-embed-text` | `http://localhost:11434/v1` | _与本地模型输出一致_（建议显式设置 `embedding.dimensions`） |
 
 ---
 
-## Optional: JSONL Session Distillation (Auto-memories from chat logs)
+## （可选）从 Session JSONL 自动蒸馏记忆（全自动）
 
-OpenClaw already persists **full session transcripts** as JSONL files:
+OpenClaw 会把每个 Agent 的完整会话自动落盘为 JSONL：
 
 - `~/.openclaw/agents/<agentId>/sessions/*.jsonl`
 
-This plugin focuses on **high-quality long-term memory**. If you dump raw transcripts into LanceDB, retrieval quality quickly degrades.
+但 JSONL 含大量噪声（tool 输出、系统块、重复回调等），**不建议直接把原文塞进 LanceDB**。
 
-Instead, you can run an **hourly distiller** that:
+本插件提供一个安全的 extractor 脚本 `scripts/jsonl_distill.py`，配合 OpenClaw 的 `cron` + 独立 distiller agent，实现“增量蒸馏 → 高质量记忆入库”：
 
-1) Incrementally reads only the **newly appended tail** of each session JSONL (byte-offset cursor)
-2) Filters noise (tool output, injected `<relevant-memories>`, logs, boilerplate)
-3) Uses a dedicated agent to **distill** reusable lessons / rules / preferences into short atomic memories
-4) Stores them via `memory_store` into the right **scope** (`global` or `agent:<agentId>`)
+- 只读取每个 JSONL 文件**新增尾巴**（byte offset cursor），避免重复和 token 浪费
+- 生成一个小型 batch JSON
+- 由 distiller agent 把 batch 蒸馏成短、原子、可复用的记忆，再用 `memory_store` 写入
 
-### What you get
+### 你会得到什么
 
-- ✅ Fully automatic (cron)
-- ✅ Multi-agent support (main + bots)
-- ✅ No re-reading: cursor ensures the next run only processes new lines
-- ✅ Memory hygiene: quality gate + dedupe + per-run caps
+- ✅ 全自动（每小时）
+- ✅ 多 Agent 支持（main + 各 bot）
+- ✅ 只处理新增内容（不回读）
+- ✅ 防自我吞噬：默认排除 `memory-distiller` 自己的 session
 
-### Script
+### 脚本输出位置
 
-This repo includes the extractor script:
+- Cursor：`~/.openclaw/state/jsonl-distill/cursor.json`
+- Batches：`~/.openclaw/state/jsonl-distill/batches/`
 
-- `scripts/jsonl_distill.py`
+> 脚本只读 session JSONL，不会修改原始日志。
 
-It produces a small **batch JSON** file under:
+### 推荐部署（独立 distiller agent）
 
-- `~/.openclaw/state/jsonl-distill/batches/`
-
-and keeps a cursor here:
-
-- `~/.openclaw/state/jsonl-distill/cursor.json`
-
-The script is **safe**: it never modifies session logs.
-
-By default it skips historical reset snapshots (`*.reset.*`) and excludes the distiller agent itself (`memory-distiller`) to prevent self-ingestion loops.
-
-### Recommended setup (dedicated distiller agent)
-
-#### 1) Create a dedicated agent
+#### 1）创建 distiller agent（示例用 gpt-5.2）
 
 ```bash
 openclaw agents add memory-distiller \
@@ -453,45 +564,44 @@ openclaw agents add memory-distiller \
   --model openai-codex/gpt-5.2
 ```
 
-#### 2) Initialize cursor (Mode A: start from now)
+#### 2）初始化 cursor（模式 A：从现在开始，不回溯历史）
 
-This marks all existing JSONL files as "already read" by setting offsets to EOF.
+先确定插件目录（PLUGIN_DIR）：
 
 ```bash
-# Set PLUGIN_DIR to where this plugin is installed.
-# - If you cloned into your OpenClaw workspace (recommended):
-#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/memory-lancedb-pro"
-# - Otherwise, check: `openclaw plugins info memory-lancedb-pro` and locate the directory.
-PLUGIN_DIR="/path/to/memory-lancedb-pro"
+# 如果你按推荐方式 clone 到 workspace：
+#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/pi-memory"
+PLUGIN_DIR="/path/to/pi-memory"
 
 python3 "$PLUGIN_DIR/scripts/jsonl_distill.py" init
 ```
 
-#### 3) Create an hourly cron job (Asia/Shanghai)
+#### 3）创建每小时 Cron（Asia/Shanghai）
 
-Tip: start the message with `run ...` so `memory-lancedb-pro`'s adaptive retrieval will skip auto-recall injection (saves tokens).
+建议 cron message 以 `run ...` 开头，这样本插件的自适应检索会跳过自动 recall 注入（节省 token）。
 
 ```bash
-# IMPORTANT: replace <PLUGIN_DIR> in the template below with your actual plugin path.
 MSG=$(cat <<'EOF'
 run jsonl memory distill
 
-Goal: distill NEW chat content from OpenClaw session JSONL files into high-quality LanceDB memories using memory_store.
+Goal: Distill ONLY new content from OpenClaw session JSONL tails into high-quality LanceDB memories.
 
 Hard rules:
-- Incremental only: call the extractor script; do NOT scan full history.
-- Store only reusable memories; skip routine chatter.
-- English memory text + final line: Keywords (zh): ...
-- < 500 chars, atomic.
-- <= 3 memories per agent per run; <= 3 global per run.
-- Scope: global for broadly reusable; otherwise agent:<agentId>.
+- Incremental only: exec the extractor. Do NOT scan full history.
+- If extractor returns action=noop: stop immediately.
+- Store only reusable memories (rules, pitfalls, decisions, preferences, stable facts). Skip routine chatter.
+- Each memory: idiomatic English + final line `Keywords (zh): ...` (3-8 short phrases).
+- Keep each memory < 500 chars and atomic.
+- Caps: <= 3 memories per agent per run; <= 3 global per run.
+- Scope:
+  - broadly reusable -> global
+  - agent-specific -> agent:<agentId>
 
 Workflow:
 1) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py run
-2) If noop: stop.
-3) Read batchFile (created/pending)
-4) memory_store(...) for selected memories
-5) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py commit --batch-file <batchFile>
+2) Determine batch file (created/pending)
+3) memory_store(...) for selected memories
+4) exec: python3 <PLUGIN_DIR>/scripts/jsonl_distill.py commit --batch-file <batchFile>
 EOF
 )
 
@@ -508,125 +618,81 @@ openclaw cron add \
   --message "$MSG"
 ```
 
-#### 4) Debug run
+### scope 策略（非常重要）
+
+当蒸馏“所有 agents”时，务必显式设置 scope：
+
+- 跨 agent 通用规则/偏好/坑 → `scope=global`
+- agent 私有 → `scope=agent:<agentId>`
+
+否则不同 bot 的记忆会相互污染。
+
+### 回滚
+
+- 禁用/删除 cron：`openclaw cron disable <jobId>` / `openclaw cron rm <jobId>`
+- 删除 distiller agent：`openclaw agents delete memory-distiller`
+- 删除 cursor 状态：`rm -rf ~/.openclaw/state/jsonl-distill/`
+
+---
+
+## CLI 命令
 
 ```bash
-openclaw cron run <jobId> --expect-final --timeout 180000
-openclaw cron runs --id <jobId> --limit 5
-```
+# 列出记忆
+openclaw pi-memory list [--scope global] [--category fact] [--limit 20] [--json]
 
-### Scope strategy (recommended)
+# 搜索记忆
+openclaw pi-memory search "query" [--scope global] [--limit 10] [--json]
 
-When distilling **all agents**, always set `scope` explicitly when calling `memory_store`:
+# 查看统计
+openclaw pi-memory stats [--scope global] [--json]
 
-- Broadly reusable → `scope=global`
-- Agent-specific → `scope=agent:<agentId>`
+# 按 ID 删除记忆（支持 8+ 字符前缀）
+openclaw pi-memory delete <id>
 
-This prevents cross-bot memory pollution.
+# 批量删除
+openclaw pi-memory delete-bulk --scope global [--before 2025-01-01] [--dry-run]
 
-### Rollback
+# 导出 / 导入
+openclaw pi-memory export [--scope global] [--output memories.json]
+openclaw pi-memory import memories.json [--scope global] [--dry-run]
 
-- Disable/remove cron job: `openclaw cron disable <jobId>` / `openclaw cron rm <jobId>`
-- Delete agent: `openclaw agents delete memory-distiller`
-- Remove cursor state: `rm -rf ~/.openclaw/state/jsonl-distill/`
+# 使用新模型重新生成 Embedding
+openclaw pi-memory reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
 
----
-
-## CLI Commands
-
-```bash
-# List memories
-openclaw memory-pro list [--scope global] [--category fact] [--limit 20] [--json]
-
-# Search memories
-openclaw memory-pro search "query" [--scope global] [--limit 10] [--json]
-
-# View statistics
-openclaw memory-pro stats [--scope global] [--json]
-
-# Delete a memory by ID (supports 8+ char prefix)
-openclaw memory-pro delete <id>
-
-# Bulk delete with filters
-openclaw memory-pro delete-bulk --scope global [--before 2025-01-01] [--dry-run]
-
-# Export / Import
-openclaw memory-pro export [--scope global] [--output memories.json]
-openclaw memory-pro import memories.json [--scope global] [--dry-run]
-
-# Re-embed all entries with a new model
-openclaw memory-pro reembed --source-db /path/to/old-db [--batch-size 32] [--skip-existing]
-
-# Migrate from built-in memory-lancedb
-openclaw memory-pro migrate check [--source /path]
-openclaw memory-pro migrate run [--source /path] [--dry-run] [--skip-existing]
-openclaw memory-pro migrate verify [--source /path]
+# 从内置 memory-lancedb 迁移
+openclaw pi-memory migrate check [--source /path]
+openclaw pi-memory migrate run [--source /path] [--dry-run] [--skip-existing]
+openclaw pi-memory migrate verify [--source /path]
 ```
 
 ---
 
-## Custom Commands (e.g. `/lesson`)
+## 数据库 Schema
 
-This plugin provides the core memory tools (`memory_store`, `memory_recall`, `memory_forget`, `memory_update`). You can define custom slash commands in your Agent's system prompt to create convenient shortcuts.
+LanceDB 表 `memories`：
 
-### Example: `/lesson` command
-
-Add this to your `CLAUDE.md`, `AGENTS.md`, or system prompt:
-
-```markdown
-## /lesson command
-When the user sends `/lesson <content>`:
-1. Use memory_store to save as category=fact (the raw knowledge)
-2. Use memory_store to save as category=decision (actionable takeaway)
-3. Confirm what was saved
-```
-
-### Example: `/remember` command
-
-```markdown
-## /remember command
-When the user sends `/remember <content>`:
-1. Use memory_store to save with appropriate category and importance
-2. Confirm with the stored memory ID
-```
-
-### Built-in Tools Reference
-
-| Tool | Description |
-|------|-------------|
-| `memory_store` | Store a memory (supports category, importance, scope) |
-| `memory_recall` | Search memories (hybrid vector + BM25 retrieval) |
-| `memory_forget` | Delete a memory by ID or search query |
-| `memory_update` | Update an existing memory in-place |
-
-> **Note**: These tools are registered automatically when the plugin loads. Custom commands like `/lesson` are not built into the plugin — they are defined at the Agent/system-prompt level and simply call these tools.
-
----
-
-## Database Schema
-
-LanceDB table `memories`:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | string (UUID) | Primary key |
-| `text` | string | Memory text (FTS indexed) |
-| `vector` | float[] | Embedding vector |
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | string (UUID) | 主键 |
+| `text` | string | 记忆文本（FTS 索引） |
+| `vector` | float[] | Embedding 向量 |
 | `category` | string | `preference` / `fact` / `decision` / `entity` / `other` |
-| `scope` | string | Scope identifier (e.g., `global`, `agent:main`) |
-| `importance` | float | Importance score 0–1 |
-| `timestamp` | int64 | Creation timestamp (ms) |
-| `metadata` | string (JSON) | Extended metadata |
+| `scope` | string | Scope 标识（如 `global`、`agent:main`） |
+| `importance` | float | 重要性分数 0-1 |
+| `timestamp` | int64 | 创建时间戳 (ms) |
+| `metadata` | string (JSON) | 扩展元数据 |
 
 ---
 
-## Dependencies
+## 依赖
 
-| Package | Purpose |
-|---------|---------|
-| `@lancedb/lancedb` ≥0.26.2 | Vector database (ANN + FTS) |
-| `openai` ≥6.21.0 | OpenAI-compatible Embedding API client |
-| `@sinclair/typebox` 0.34.48 | JSON Schema type definitions (tool parameters) |
+| 包 | 用途 |
+|----|------|
+| `@lancedb/lancedb` ≥0.26.2 | 向量数据库（ANN + FTS） |
+| `openai` ≥6.21.0 | OpenAI 兼容 Embedding API 客户端 |
+| `@sinclair/typebox` 0.34.48 | JSON Schema 类型定义（工具参数） |
+| `@modelcontextprotocol/sdk` ≥1.26.0 | MCP Server + StreamableHTTP 传输 |
 
 ---
 
@@ -634,14 +700,3 @@ LanceDB table `memories`:
 
 MIT
 
----
-
-## Buy Me a Coffee
-
-[!["Buy Me A Coffee"](https://storage.ko-fi.com/cdn/kofi2.png?v=3)](https://ko-fi.com/aila)
-
-## My WeChat Group and My WeChat QR Code
-
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/d6dcfd1a-60fa-4b6f-9d5e-1482150a7d95" width="186" height="300">
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/7568cf78-c8ba-4182-aa96-d524d903f2bc" width="214.8" height="291">
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/fefe535c-8153-4046-bfb4-e65eacbf7a33" width="207" height="281">

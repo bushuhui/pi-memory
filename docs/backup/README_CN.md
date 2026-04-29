@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 memory-lancedb-pro · OpenClaw Plugin
+# 🧠 pi-memory · OpenClaw Plugin
 
 **[OpenClaw](https://github.com/openclaw/openclaw) 增强型 LanceDB 长期记忆插件**
 
@@ -30,9 +30,9 @@
 
 ## 为什么需要这个插件？
 
-OpenClaw 内置的 `memory-lancedb` 插件仅提供基本的向量搜索。**memory-lancedb-pro** 在此基础上进行了全面升级：
+OpenClaw 内置的 `memory-lancedb` 插件仅提供基本的向量搜索。**pi-memory** 在此基础上进行了全面升级：
 
-| 功能 | 内置 `memory-lancedb` | **memory-lancedb-pro** |
+| 功能 | 内置 `memory-lancedb` | **pi-memory** |
 |------|----------------------|----------------------|
 | 向量搜索 | ✅ | ✅ |
 | BM25 全文检索 | ❌ | ✅ |
@@ -170,7 +170,7 @@ Query → BM25 FTS ─────┘
 openclaw config get agents.defaults.workspace
 openclaw config get plugins.load.paths
 openclaw config get plugins.slots.memory
-openclaw config get plugins.entries.memory-lancedb-pro
+openclaw config get plugins.entries.pi-memory
 ```
 
 建议：
@@ -195,7 +195,7 @@ Key 存储建议：
 
 > 说明：OpenClaw 的配置文件通常在 `~/.openclaw/openclaw.json`，与 workspace 是分开的。
 
-**最常见的安装错误：** 把插件 clone 到别的目录，但在配置里仍然写类似 `"paths": ["plugins/memory-lancedb-pro"]` 的**相对路径**。相对路径的解析基准会受 Gateway 启动方式/工作目录影响，容易指向错误位置。
+**最常见的安装错误：** 把插件 clone 到别的目录，但在配置里仍然写类似 `"paths": ["plugins/pi-memory"]` 的**相对路径**。相对路径的解析基准会受 Gateway 启动方式/工作目录影响，容易指向错误位置。
 
 为避免歧义：建议用**绝对路径**（方案 B），或把插件放在 `<workspace>/plugins/`（方案 A）并保持配置一致。
 
@@ -207,10 +207,10 @@ Key 存储建议：
 cd /path/to/your/openclaw/workspace
 
 # 2) 把插件克隆到 workspace/plugins/ 下
-git clone https://github.com/win4r/memory-lancedb-pro.git plugins/memory-lancedb-pro
+git clone https://github.com/win4r/pi-memory.git plugins/pi-memory
 
 # 3) 安装依赖
-cd plugins/memory-lancedb-pro
+cd plugins/pi-memory
 npm install
 ```
 
@@ -220,10 +220,10 @@ npm install
 {
   "plugins": {
     "load": {
-      "paths": ["plugins/memory-lancedb-pro"]
+      "paths": ["plugins/pi-memory"]
     },
     "entries": {
-      "memory-lancedb-pro": {
+      "pi-memory": {
         "enabled": true,
         "config": {
           "embedding": {
@@ -239,7 +239,7 @@ npm install
       }
     },
     "slots": {
-      "memory": "memory-lancedb-pro"
+      "memory": "pi-memory"
     }
   }
 }
@@ -251,7 +251,7 @@ npm install
 {
   "plugins": {
     "load": {
-      "paths": ["/absolute/path/to/memory-lancedb-pro"]
+      "paths": ["/absolute/path/to/pi-memory"]
     }
   }
 }
@@ -271,7 +271,7 @@ openclaw gateway restart
 
 ```bash
 openclaw plugins list
-openclaw plugins info memory-lancedb-pro
+openclaw plugins info pi-memory
 ```
 
 2）如果发现异常，运行插件诊断：
@@ -283,7 +283,7 @@ openclaw plugins doctor
 3）确认 memory slot 已指向本插件：
 
 ```bash
-# 期望看到：plugins.slots.memory = "memory-lancedb-pro"
+# 期望看到：plugins.slots.memory = "pi-memory"
 openclaw config get plugins.slots.memory
 ```
 
@@ -402,8 +402,8 @@ openclaw agents add memory-distiller \
 
 ```bash
 # 如果你按推荐方式 clone 到 workspace：
-#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/memory-lancedb-pro"
-PLUGIN_DIR="/path/to/memory-lancedb-pro"
+#   PLUGIN_DIR="$HOME/.openclaw/workspace/plugins/pi-memory"
+PLUGIN_DIR="/path/to/pi-memory"
 
 python3 "$PLUGIN_DIR/scripts/jsonl_distill.py" init
 ```
@@ -531,14 +531,3 @@ LanceDB 表 `memories`：
 
 MIT
 
----
-
-## Buy Me a Coffee
-
-[!["Buy Me A Coffee"](https://storage.ko-fi.com/cdn/kofi2.png?v=3)](https://ko-fi.com/aila)
-
-## 我的微信群和微信二维码
-
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/d6dcfd1a-60fa-4b6f-9d5e-1482150a7d95" width="186" height="300">
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/7568cf78-c8ba-4182-aa96-d524d903f2bc" width="214.8" height="291">
-<img src="https://github.com/win4r/AISuperDomain/assets/42172631/fefe535c-8153-4046-bfb4-e65eacbf7a33" width="207" height="281">
