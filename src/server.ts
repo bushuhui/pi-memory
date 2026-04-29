@@ -363,7 +363,7 @@ function createRestRouter(components: ServerComponents): Router {
         return badRequest(res, "Missing required field: query");
       }
 
-      const limit = Math.min(Math.max(Number(body.limit) || 5, 1), 20);
+      const limit = Math.min(Math.max(Number(body.limit) || 20, 1), 100);
       const results = await hybridKnowledgeSearch(query, knowledgeStore, embedder, retrievalConfig, limit);
 
       const cleanResults = results.map(r => ({
@@ -580,12 +580,12 @@ function createMcpServer(components: ServerComponents): McpServer {
       description: "Search indexed knowledge base (documents, notes) with hybrid retrieval",
       inputSchema: z.object({
         query: z.string().describe("Search query"),
-        limit: z.number().optional().default(5).describe("Max results (default 5, max 20)"),
+        limit: z.number().optional().default(20).describe("Max results (default 20, max 100)"),
       }),
     },
     async ({ query, limit }) => {
       try {
-        const safeLimit = Math.min(Math.max(limit, 1), 20);
+        const safeLimit = Math.min(Math.max(limit, 1), 100);
         const rc: RetrievalConfig = {
           mode: "hybrid",
           vectorWeight: 0.7,

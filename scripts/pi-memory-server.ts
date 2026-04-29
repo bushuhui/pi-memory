@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env -S node --import jiti/register
 /**
  * pi-memory-server CLI
  * Standalone server for pi-memory HTTP API + MCP.

@@ -130,6 +130,7 @@ pi-memory 基于项目 https://github.com/CortexReach/memory-lancedb-pro 改进�
 | `src/server.ts` | 统一 HTTP 服务器。REST API + MCP StreamableHTTP，单端口共享 |
 | `src/server-bootstrap.ts` | 服务器启动引导。组件初始化（embedder → store → retriever → knowledge → server） |
 | `scripts/pi-memory-server.ts` | CLI 入口脚本。独立服务器启动入口，支持 `--port`/`--host`/`--api-key`/`--no-http`/`--no-mcp` 等参数 |
+| `docs/server_mcp_api.md` | HTTP REST API 和 MCP Server 的完整接口定义和使用文档 |
 
 ---
 
@@ -244,60 +245,17 @@ pi-memory-server --api-key your-secret-key
 | `PI_MEMORY_RERANK_ENDPOINT` | Reranker 端点 |
 | `PI_MEMORY_RERANK_PROVIDER` | Reranker 提供商 |
 
-#### 9.3 REST API 端点
+#### 9.3 REST API & MCP Server
 
-**健康检查：**
+详见 [docs/server_mcp_api.md](docs/server_mcp_api.md)。
 
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| `GET` | `/health` | 服务状态、版本、内存使用 |
+包含：
+- 健康检查 `/health`
+- 记忆管理：`/api/memory/search`、`/api/memory/store`、`/api/memory/list`、`/api/memory/stats`、`/api/memory/:id`（DELETE/PATCH）
+- 知识库：`/api/knowledge/search`、`/api/knowledge/index`、`/api/knowledge/stats`
+- MCP 工具：`memory_search`、`memory_store`、`memory_forget`、`knowledge_search`、`knowledge_index`
 
-**记忆管理（`/api/memory`）：**
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| `POST` | `/api/memory/search` | 搜索记忆（混合检索） |
-| `POST` | `/api/memory/store` | 存储新记忆 |
-| `GET` | `/api/memory/list` | 列出记忆（分页） |
-| `GET` | `/api/memory/stats` | 记忆统计信息 |
-| `DELETE` | `/api/memory/:id` | 删除记忆 |
-| `PATCH` | `/api/memory/:id` | 更新记忆 |
-
-**知识库（`/api/knowledge`）：**
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| `POST` | `/api/knowledge/search` | 搜索知识库（混合检索） |
-| `POST` | `/api/knowledge/index` | 重建知识库索引 |
-| `GET` | `/api/knowledge/stats` | 知识库统计信息 |
-
-所有 POST 请求体为 JSON 格式，响应统一为 `{ "success": true/false, "data": {...}, "error": "..." }`。
-
-#### 9.4 MCP Server（Streamable HTTP Transport）
-
-MCP Server 与 REST API 共享同一进程和端口，通过 `/mcp` 端点提供服务。使用 MCP 2024-11-05 协议，Streamable HTTP 传输（SSE 的继任者），无状态模式。
-
-**可用工具：**
-
-| 工具名 | 说明 |
-|--------|------|
-| `memory_search` | 搜索记忆（混合检索：Vector + BM25 + Rerank） |
-| `memory_store` | 存储新记忆 |
-| `memory_forget` | 删除记忆 |
-| `knowledge_search` | 搜索知识库 |
-| `knowledge_index` | 重建知识库索引 |
-
-**客户端连接示例：**
-
-```bash
-# MCP 客户端 POST 到 /mcp 端点
-curl -X POST http://localhost:9873/mcp \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"my-client","version":"1.0"}}}'
-```
-
-#### 9.5 集成示例
+#### 9.4 集成示例
 
 **Hermes Agent 调用记忆搜索：**
 
@@ -314,6 +272,46 @@ curl -X POST http://localhost:9873/api/knowledge/search \
   -H "Content-Type: application/json" \
   -d '{"query": "Claude Code 配置", "limit": 5}'
 ```
+
+#### 9.5 Claude Code Skill
+
+pi-memory 提供了 Claude Code Skill，让 Claude Code 能够通过自然语言直接查询本地知识库。Skill 基于 LLM 驱动的查询扩展，自动进行中英对照、同义词、缩写等扩展，确保检索全面不遗漏。
+
+**安装：**
+
+```bash
+# 克隆 skill 仓库
+git clone https://gitee.com/pi-lab/skills.git ~/.agents/skills
+# 或单独克隆 pi-memory skill
+git clone https://gitee.com/pi-lab/skills/pi-memory.git ~/.agents/skills/pi-memory
+```
+
+**使用：**
+
+在 Claude Code 中直接输入自然语言即可触发：
+
+```
+查一下知识库，无人机控制有哪些资料
+搜索知识库：强化学习
+knowledge search: LLM fine-tuning
+```
+
+Claude 会自动扩展查询变体（如 `无人机控制` → `UAV control` → `drone导航`），并通过并行多查询搜索获取最相关的文档片段。
+
+**直接调用脚本：**
+
+```bash
+# 单关键词搜索
+python3 ~/.agents/skills/pi-memory/scripts/knowledge_search.py "无人机控制"
+
+# 多关键词并行搜索
+python3 ~/.agents/skills/pi-memory/scripts/knowledge_search.py --queries "无人机控制" "UAV control" "drone导航" --limit 100
+
+# 自定义服务器
+python3 ~/.agents/skills/pi-memory/scripts/knowledge_search.py --queries "集群建图" "swarm mapping" --server http://192.168.1.10:9873
+```
+
+**更多详情：** 参见 [pi-memory skill 文档](https://gitee.com/pi-lab/skills)
 
 ---
 
@@ -625,6 +623,32 @@ openclaw cron add \
 ---
 
 ## CLI 命令
+
+### 独立服务器
+
+**直接启动（开发/调试）：**
+
+```bash
+pi-memory-server                          # 默认配置（端口 9873）
+pi-memory-server --port 9873 --host 0.0.0.0
+pi-memory-server --no-mcp                 # 仅 REST API
+pi-memory-server --no-http                # 仅 MCP
+pi-memory-server --api-key secret         # 启用 API Key 认证
+pi-memory-server --help                   # 查看所有参数
+```
+
+**守护进程启动（推荐生产环境）：**
+
+```bash
+./scripts/start-server.sh start           # 启动（后台运行，日志到 logs/）
+./scripts/start-server.sh stop            # 优雅停止
+./scripts/start-server.sh restart         # 重启
+./scripts/start-server.sh status          # 查看运行状态
+```
+
+> 日志文件：`logs/pi-memory-server_YYYYMMDD.log`，PID 文件：`logs/pi-memory-server.pid`
+
+### OpenClaw 插件
 
 ```bash
 # 列出记忆
