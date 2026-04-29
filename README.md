@@ -10,21 +10,8 @@
 [![LanceDB](https://img.shields.io/badge/LanceDB-Vectorstore-orange)](https://lancedb.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-[English](README.md) | **简体中文**
-
 </div>
 
----
-
-## 📺 视频教程
-
-> **观看完整教程 — 涵盖安装、配置，以及混合检索的底层原理。**
-
-[![YouTube Video](https://img.shields.io/badge/YouTube-立即观看-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
-🔗 **https://youtu.be/MtukF1C8epQ**
-
-[![Bilibili Video](https://img.shields.io/badge/Bilibili-立即观看-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1zUf2BGEgn/)
-🔗 **https://www.bilibili.com/video/BV1zUf2BGEgn/**
 
 ---
 
@@ -51,6 +38,8 @@ OpenClaw 内置的 `memory-lancedb` 插件仅提供基本的向量搜索。**pi-
 | 任意 OpenAI 兼容 Embedding | 有限 | ✅（OpenAI、Gemini、Jina、Ollama 等） |
 | **独立 HTTP Server** | ❌ | ✅（REST API + MCP Server，单端口） |
 | **外部系统集成** | ❌ | ✅（Hermes Agent、Claude Code、任意脚本） |
+
+pi-memory 基于项目 https://github.com/CortexReach/memory-lancedb-pro 改进而来。
 
 ---
 
@@ -700,3 +689,15 @@ LanceDB 表 `memories`：
 
 MIT
 
+
+---
+
+## 📺 视频教程
+
+> **观看完整教程 — 涵盖安装、配置，以及混合检索的底层原理。**
+
+[![YouTube Video](https://img.shields.io/badge/YouTube-立即观看-red?style=for-the-badge&logo=youtube)](https://youtu.be/MtukF1C8epQ)
+🔗 **https://youtu.be/MtukF1C8epQ**
+
+[![Bilibili Video](https://img.shields.io/badge/Bilibili-立即观看-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white)](https://www.bilibili.com/video/BV1zUf2BGEgn/)
+🔗 **https://www.bilibili.com/video/BV1zUf2BGEgn/**
