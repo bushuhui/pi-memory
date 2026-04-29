@@ -15,6 +15,8 @@ LOG_FILE="$LOG_DIR/pi-memory-server_$(date '+%Y%m%d').log"
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
+cd $PROJECT_DIR
+
 start() {
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
         echo "[pi-memory-server] Already running (PID: $(cat "$PID_FILE"))"
