@@ -25,3 +25,10 @@ HTTP server 和 MCP 的sse服务的端口可以共用一个
 你仔细阅读一下 README.md ，把最近的新增的功能增加到说明文件。
 
 你仔细阅读一下 git 的提交记录，把还没有更新到 CHANGELOG.md 的改进等，增加到 CHANGELOG.md
+
+
+## 2026-04-30
+
+scripts/index-knowledge.mjs 你仔细看一下这个程序。
+- 遍历知识库目录的时候，能跟着符号链接进入下一级目录吧
+- 你看一下 PI-LLM-Server 的API文档 /home/bushuhui/pi-lab/0_ai_agent/agents/pi-llm-server/doc/api.md 。你检查一下你们的程序，能否一次 embedding 调用，发送多段文字，让多个文字同时进行 embedding 计算 
