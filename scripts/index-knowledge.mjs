@@ -31,7 +31,7 @@ const configPath = join(homedir(), ".openclaw", "openclaw.json");
 const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
 // Read config from plugin entry (memory-lancedb-pro)
-const pluginConfig = config?.plugins?.entries?.["memory-lancedb-pro"]?.config || {};
+const pluginConfig = config?.plugins?.entries?.["pi-memory"]?.config || {};
 const extraPaths = pluginConfig.knowledgePaths || [];
 const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/lancedb-pro";
 const dbPath = join(homedir(), dbPathConfig.replace("~/", ""));
@@ -57,6 +57,10 @@ console.log("");
 // Embedder (inline OpenAI-compatible)
 // ============================================================================
 
+const EMBED_BATCH_SIZE = process.env.EMBED_BATCH_SIZE
+  ? parseInt(process.env.EMBED_BATCH_SIZE, 10)
+  : 10; // Default: send 10 chunks per API call (tunable via env var)
+
 const openai = new OpenAI({
   apiKey: embCfg.apiKey,
   ...(embCfg.baseURL ? { baseURL: embCfg.baseURL } : {}),
@@ -65,53 +69,20 @@ const openai = new OpenAI({
 async function embedBatch(texts) {
   if (!texts || texts.length === 0) return [];
 
-  // API may have batch size limits (e.g. Aliyun max 10)
-  const BATCH_SIZE = 10;
   const allEmbeddings = [];
 
-  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
-    const batch = texts.slice(i, i + BATCH_SIZE);
+  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+    const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
     const resp = await openai.embeddings.create({
       model: embCfg.model,
       input: batch,
-      encoding_format: 'float'  // Explicitly use float format to avoid SDK base64 decoding issues
+      encoding_format: 'float'
     });
     allEmbeddings.push(...resp.data.map((d) => d.embedding));
   }
 
   return allEmbeddings;
 }
-
-// Semaphore to limit concurrent embedding requests
-class Semaphore {
-  constructor(limit) {
-    this.limit = limit;
-    this.current = 0;
-    this.queue = [];
-  }
-
-  async acquire() {
-    if (this.current < this.limit) {
-      this.current++;
-      return;
-    }
-    await new Promise(resolve => {
-      this.queue.push(resolve);
-    });
-  }
-
-  release() {
-    this.current--;
-    if (this.queue.length > 0) {
-      const next = this.queue.shift();
-      next();
-    } else {
-      this.current = Math.max(0, this.current);
-    }
-  }
-}
-
-const embedSemaphore = new Semaphore(10); // Max 10 concurrent embedding API calls
 
 // ============================================================================
 // Graceful Shutdown & Memory Monitoring
@@ -152,15 +123,6 @@ function maybeLogMemory(fileCount) {
   if (fileCount % MEMORY_LOG_INTERVAL === 0) {
     const mem = process.memoryUsage();
     console.log(`\n[mem] File #${fileCount} — RSS: ${(mem.rss / 1024 / 1024).toFixed(0)}MB, Heap: ${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB, External: ${(mem.external / 1024 / 1024).toFixed(0)}MB`);
-  }
-}
-
-async function embedWithSemaphore(texts) {
-  await embedSemaphore.acquire();
-  try {
-    return await embedBatch(texts);
-  } finally {
-    embedSemaphore.release();
   }
 }
 
@@ -394,16 +356,23 @@ for (let i = 0; i < allFiles.length; i += SCAN_CONCURRENCY) {
 }
 console.log(`\r  ${allFiles.length} files checked: ${changedFiles.length} changed, ${totalSkipped} unchanged${" ".repeat(40)}`);
 
-// --- Phase 3: Process only changed files ---
+// --- Phase 3: Process changed files ---
 if (changedFiles.length === 0) {
   console.log("Phase 3: No files need processing. Skipping.");
 } else {
-  console.log(`Phase 3: Processing ${changedFiles.length} changed files (concurrency=${EMBED_CONCURRENCY})...`);
+  console.log(`Phase 3: Processing ${changedFiles.length} changed files (embed batch size=${EMBED_BATCH_SIZE})...`);
+
   let processedCount = 0;
+
+  // Step 3a: Read, chunk, and collect all changed files (concurrency=EMBED_CONCURRENCY)
+  console.log("  Step 3a: Reading and chunking changed files...");
+  const allChunkBatches = []; // [{fileInfo, chunks}]
+  let readSkipped = 0;
+  let readErrors = 0;
 
   for (let i = 0; i < changedFiles.length; i += EMBED_CONCURRENCY) {
     if (shuttingDown) {
-      console.log(`\n[interrupt] Stopping. Processed ${processedCount}/${changedFiles.length} changed files.`);
+      console.log(`\n[interrupt] Stopping during read phase. Processed ${i}/${changedFiles.length}.`);
       break;
     }
     const batch = changedFiles.slice(i, i + EMBED_CONCURRENCY);
@@ -416,7 +385,7 @@ if (changedFiles.length === 0) {
           const stats = await stat(entry.path);
           const mtimeSec = Math.floor(stats.mtimeMs / 1000);
           const existing = getFileMetadata(entry.path);
-          // Skip if unchanged AND not forced — double safety since Phase 2 already filtered
+          // Skip if unchanged AND not forced
           if (existing && !forceReindex && Math.abs(existing.mtime - mtimeSec) <= 2) {
             return { type: "skipped", path: relPath };
           }
@@ -435,9 +404,6 @@ if (changedFiles.length === 0) {
             return { type: "skipped", path: relPath };
           }
 
-          // Delete old chunks
-          await deleteByFilePath(entry.path);
-
           // Chunk
           const chunks = chunkText(content);
           if (chunks.length === 0) {
@@ -446,29 +412,16 @@ if (changedFiles.length === 0) {
             return { type: "empty", path: relPath };
           }
 
-          // Embed
-          const embeddings = await embedWithSemaphore(chunks);
-
-          // Store
-          const records = chunks.map((text, idx) => ({
-            id: randomUUID(),
-            text,
-            vector: embeddings[idx],
+          return {
+            type: "ready",
+            path: relPath,
             filePath: entry.path,
-            fileName: basename(entry.path),
-            fileType: extname(entry.path).slice(1),
-            chunkIndex: idx,
-            timestamp: Date.now(),
-            fileMtime: mtimeSec,
-            fileHash: contentHash,
-          }));
-
-          await table.add(records);
-          fileMetadataCache.set(entry.path, { mtime: mtimeSec, hash: contentHash });
-
-          return { type: "indexed", path: relPath, chunks: chunks.length };
+            mtimeSec,
+            contentHash,
+            chunks,
+          };
         } catch (err) {
-          console.error(`\n[p3-exception] ${entry.path}: ${err?.message || err}`);
+          console.error(`\n[p3-read-exception] ${entry.path}: ${err?.message || err}`);
           throw err;
         }
       })
@@ -478,22 +431,73 @@ if (changedFiles.length === 0) {
       if (result.status === "fulfilled") {
         const r = result.value;
         if (r.type === "skipped" || r.type === "empty") {
-          totalSkipped++;
-        } else if (r.type === "indexed") {
-          totalIndexed++;
-          processedCount++;
-          maybeLogMemory(processedCount);
-          const msg = `Indexing: ${r.path} (${r.chunks} chunks) [${processedCount}/${changedFiles.length}]`;
-          process.stdout.write(`\n${msg}`);
+          readSkipped++;
+        } else if (r.type === "ready") {
+          allChunkBatches.push(r);
+          process.stdout.write(`\r    Collected ${allChunkBatches.length} files ready...`);
         }
       } else {
-        totalErrors++;
+        readErrors++;
         const r = result.reason;
         const errMsg = r?.stack || r?.message || String(r);
-        console.error(`\n[error] Phase 3 batch error: ${errMsg}`);
+        console.error(`\n[error] Phase 3 read error: ${errMsg}`);
       }
     }
   }
+  console.log(`\r    ${allChunkBatches.length} files ready to embed, ${readSkipped} skipped, ${readErrors} errors${" ".repeat(30)}`);
+
+  // Step 3b: Batch embed all chunks together
+  if (allChunkBatches.length === 0) {
+    console.log("  Step 3b: No chunks to embed. Skipping.");
+  } else {
+    console.log(`  Step 3b: Embedding all chunks (global batch)...`);
+    const globalChunks = [];
+    for (const fb of allChunkBatches) {
+      for (const chunk of fb.chunks) {
+        globalChunks.push({ fileBatch: fb, text: chunk });
+      }
+    }
+    console.log(`    Total chunks: ${globalChunks.length}`);
+
+    // Delete old chunks for all files before embedding (same order as original)
+    for (const fb of allChunkBatches) {
+      await deleteByFilePath(fb.filePath);
+    }
+
+    const embeddings = await embedBatch(globalChunks.map(c => c.text));
+
+    // Step 3c: Store results grouped by file
+    console.log("  Step 3c: Storing results...");
+    let storeIndex = 0;
+    for (const fb of allChunkBatches) {
+      const fileEmbeddings = embeddings.slice(storeIndex, storeIndex + fb.chunks.length);
+      const records = fb.chunks.map((text, idx) => ({
+        id: randomUUID(),
+        text,
+        vector: fileEmbeddings[idx],
+        filePath: fb.filePath,
+        fileName: basename(fb.filePath),
+        fileType: extname(fb.filePath).slice(1),
+        chunkIndex: idx,
+        timestamp: Date.now(),
+        fileMtime: fb.mtimeSec,
+        fileHash: fb.contentHash,
+      }));
+
+      await table.add(records);
+      fileMetadataCache.set(fb.filePath, { mtime: fb.mtimeSec, hash: fb.contentHash });
+
+      totalIndexed++;
+      processedCount = totalIndexed;
+      maybeLogMemory(processedCount);
+      process.stdout.write(`\r    Stored ${totalIndexed}/${allChunkBatches.length} files...`);
+      storeIndex += fb.chunks.length;
+    }
+    console.log(`\r    ${allChunkBatches.length} files stored successfully${" ".repeat(30)}`);
+  }
+
+  totalSkipped += readSkipped;
+  totalErrors += readErrors;
   console.log("");
 }
 
