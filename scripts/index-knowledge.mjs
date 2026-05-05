@@ -274,7 +274,6 @@ await loadFileMetadataCache();
 let totalScanned = 0, totalIndexed = 0, totalSkipped = 0, totalErrors = 0;
 
 const SCAN_CONCURRENCY = 100; // High concurrency for lightweight stat() calls
-const EMBED_CONCURRENCY = 10; // Balance between throughput and resource contention
 
 // --- Phase 1: Scan ALL directories ---
 console.log("Phase 1: Scanning directories...");
@@ -356,36 +355,37 @@ for (let i = 0; i < allFiles.length; i += SCAN_CONCURRENCY) {
 }
 console.log(`\r  ${allFiles.length} files checked: ${changedFiles.length} changed, ${totalSkipped} unchanged${" ".repeat(40)}`);
 
-// --- Phase 3: Process changed files ---
+// --- Phase 3: Process changed files in small batches ---
+// Each batch: read 5 files → chunk → delete old → embed → store
+// This keeps memory bounded and keeps the embed API busy from the start.
 if (changedFiles.length === 0) {
   console.log("Phase 3: No files need processing. Skipping.");
 } else {
-  console.log(`Phase 3: Processing ${changedFiles.length} changed files (embed batch size=${EMBED_BATCH_SIZE})...`);
+  console.log(`Phase 3: Processing ${changedFiles.length} changed files (file batch=5, embed batch=${EMBED_BATCH_SIZE})...`);
 
-  let processedCount = 0;
+  let batchSkipped = 0;
+  let batchErrors = 0;
+  let totalChunksEmbedded = 0;
 
-  // Step 3a: Read, chunk, and collect all changed files (concurrency=EMBED_CONCURRENCY)
-  console.log("  Step 3a: Reading and chunking changed files...");
-  const allChunkBatches = []; // [{fileInfo, chunks}]
-  let readSkipped = 0;
-  let readErrors = 0;
+  const FILE_BATCH_SIZE = 5;
 
-  for (let i = 0; i < changedFiles.length; i += EMBED_CONCURRENCY) {
+  for (let i = 0; i < changedFiles.length; i += FILE_BATCH_SIZE) {
     if (shuttingDown) {
-      console.log(`\n[interrupt] Stopping during read phase. Processed ${i}/${changedFiles.length}.`);
+      console.log(`\n[interrupt] Stopping during Phase 3. Processed ${i}/${changedFiles.length}.`);
       break;
     }
-    const batch = changedFiles.slice(i, i + EMBED_CONCURRENCY);
 
+    const fileBatch = changedFiles.slice(i, i + FILE_BATCH_SIZE);
+
+    // 1. Read and chunk files concurrently
     const results = await Promise.allSettled(
-      batch.map(async (entry) => {
+      fileBatch.map(async (entry) => {
         const relPath = relative(entry.root, entry.path);
         try {
-          // Re-check mtime (file may have changed between phase 2 and phase 3)
           const stats = await stat(entry.path);
           const mtimeSec = Math.floor(stats.mtimeMs / 1000);
           const existing = getFileMetadata(entry.path);
-          // Skip if unchanged AND not forced
+
           if (existing && !forceReindex && Math.abs(existing.mtime - mtimeSec) <= 2) {
             return { type: "skipped", path: relPath };
           }
@@ -393,7 +393,6 @@ if (changedFiles.length === 0) {
           const content = await readFile(entry.path, "utf-8");
           const contentHash = createHash("sha256").update(content).digest("hex");
 
-          // Verify hash against old entry (mtime drifted but content same)
           if (existing && existing.hash === contentHash) {
             const escaped = entry.path.replace(/'/g, "''");
             await table.update({
@@ -404,10 +403,8 @@ if (changedFiles.length === 0) {
             return { type: "skipped", path: relPath };
           }
 
-          // Chunk
           const chunks = chunkText(content);
           if (chunks.length === 0) {
-            // Record hash so we skip this empty file on future runs
             fileMetadataCache.set(entry.path, { mtime: mtimeSec, hash: contentHash });
             return { type: "empty", path: relPath };
           }
@@ -427,77 +424,75 @@ if (changedFiles.length === 0) {
       })
     );
 
+    const readyBatches = [];
     for (const result of results) {
       if (result.status === "fulfilled") {
         const r = result.value;
         if (r.type === "skipped" || r.type === "empty") {
-          readSkipped++;
+          batchSkipped++;
         } else if (r.type === "ready") {
-          allChunkBatches.push(r);
-          process.stdout.write(`\r    Collected ${allChunkBatches.length} files ready...`);
+          readyBatches.push(r);
         }
       } else {
-        readErrors++;
-        const r = result.reason;
-        const errMsg = r?.stack || r?.message || String(r);
+        batchErrors++;
+        const errMsg = result.reason?.stack || result.reason?.message || String(result.reason);
         console.error(`\n[error] Phase 3 read error: ${errMsg}`);
       }
     }
-  }
-  console.log(`\r    ${allChunkBatches.length} files ready to embed, ${readSkipped} skipped, ${readErrors} errors${" ".repeat(30)}`);
 
-  // Step 3b: Batch embed all chunks together
-  if (allChunkBatches.length === 0) {
-    console.log("  Step 3b: No chunks to embed. Skipping.");
-  } else {
-    console.log(`  Step 3b: Embedding all chunks (global batch)...`);
-    const globalChunks = [];
-    for (const fb of allChunkBatches) {
-      for (const chunk of fb.chunks) {
-        globalChunks.push({ fileBatch: fb, text: chunk });
+    if (readyBatches.length > 0) {
+      // 2. Delete old chunks for ready files
+      for (const fb of readyBatches) {
+        await deleteByFilePath(fb.filePath);
+      }
+
+      // 3. Embed chunks for this batch
+      const batchChunks = [];
+      for (const fb of readyBatches) {
+        for (const chunk of fb.chunks) {
+          batchChunks.push({ fileBatch: fb, text: chunk });
+        }
+      }
+
+      const embeddings = await embedBatch(batchChunks.map(c => c.text));
+      totalChunksEmbedded += batchChunks.length;
+
+      // 4. Store results
+      let embIdx = 0;
+      for (const fb of readyBatches) {
+        const fileEmbeddings = embeddings.slice(embIdx, embIdx + fb.chunks.length);
+        const records = fb.chunks.map((text, idx) => ({
+          id: randomUUID(),
+          text,
+          vector: fileEmbeddings[idx],
+          filePath: fb.filePath,
+          fileName: basename(fb.filePath),
+          fileType: extname(fb.filePath).slice(1),
+          chunkIndex: idx,
+          timestamp: Date.now(),
+          fileMtime: fb.mtimeSec,
+          fileHash: fb.contentHash,
+        }));
+
+        await table.add(records);
+        fileMetadataCache.set(fb.filePath, { mtime: fb.mtimeSec, hash: fb.contentHash });
+        totalIndexed++;
+        maybeLogMemory(totalIndexed);
+        embIdx += fb.chunks.length;
       }
     }
-    console.log(`    Total chunks: ${globalChunks.length}`);
 
-    // Delete old chunks for all files before embedding (same order as original)
-    for (const fb of allChunkBatches) {
-      await deleteByFilePath(fb.filePath);
-    }
-
-    const embeddings = await embedBatch(globalChunks.map(c => c.text));
-
-    // Step 3c: Store results grouped by file
-    console.log("  Step 3c: Storing results...");
-    let storeIndex = 0;
-    for (const fb of allChunkBatches) {
-      const fileEmbeddings = embeddings.slice(storeIndex, storeIndex + fb.chunks.length);
-      const records = fb.chunks.map((text, idx) => ({
-        id: randomUUID(),
-        text,
-        vector: fileEmbeddings[idx],
-        filePath: fb.filePath,
-        fileName: basename(fb.filePath),
-        fileType: extname(fb.filePath).slice(1),
-        chunkIndex: idx,
-        timestamp: Date.now(),
-        fileMtime: fb.mtimeSec,
-        fileHash: fb.contentHash,
-      }));
-
-      await table.add(records);
-      fileMetadataCache.set(fb.filePath, { mtime: fb.mtimeSec, hash: fb.contentHash });
-
-      totalIndexed++;
-      processedCount = totalIndexed;
-      maybeLogMemory(processedCount);
-      process.stdout.write(`\r    Stored ${totalIndexed}/${allChunkBatches.length} files...`);
-      storeIndex += fb.chunks.length;
-    }
-    console.log(`\r    ${allChunkBatches.length} files stored successfully${" ".repeat(30)}`);
+    // 5. Progress report every batch
+    const processed = Math.min(i + FILE_BATCH_SIZE, changedFiles.length);
+    console.log(`  [progress] ${processed}/${changedFiles.length} — indexed:${totalIndexed}, skipped:${batchSkipped}, errors:${batchErrors}, chunks:${totalChunksEmbedded}`);
   }
 
-  totalSkipped += readSkipped;
-  totalErrors += readErrors;
+  totalSkipped += batchSkipped;
+  totalErrors += batchErrors;
+
+  if (totalIndexed > 0) {
+    console.log(`  Total chunks embedded: ${totalChunksEmbedded}`);
+  }
   console.log("");
 }
 
