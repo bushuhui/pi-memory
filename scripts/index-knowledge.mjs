@@ -9,12 +9,45 @@
 
 import { homedir } from "node:os";
 import { join, extname, basename, relative } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { connect } from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
 import OpenAI from "openai";
+import { pid } from "node:process";
+
+// ============================================================================
+// Single-instance lock
+// ============================================================================
+
+const LOCK_FILE = join(homedir(), ".openclaw", "memory", "index-knowledge.lock");
+
+function acquireLock() {
+  try {
+    const existing = readFileSync(LOCK_FILE, "utf-8").trim();
+    const lockPid = parseInt(existing, 10);
+    // Check if the locked PID is still alive
+    try {
+      process.kill(lockPid, 0);
+      console.error(`[lock] Another instance (PID ${lockPid}) is already running. Exiting.`);
+      process.exit(0);
+    } catch {
+      // Process not alive — stale lock
+      console.error(`[lock] Removing stale lock (PID ${lockPid} no longer alive)`);
+    }
+  } catch (err) {
+    // Lock file doesn't exist — first instance, continue
+  }
+  writeFileSync(LOCK_FILE, String(pid));
+}
+
+function releaseLock() {
+  try { unlinkSync(LOCK_FILE); } catch { /* ignore */ }
+}
+
+acquireLock();
+process.on("exit", releaseLock);
 
 // ============================================================================
 // Config
