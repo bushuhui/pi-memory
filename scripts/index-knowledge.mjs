@@ -99,6 +99,33 @@ const openai = new OpenAI({
   ...(embCfg.baseURL ? { baseURL: embCfg.baseURL } : {}),
 });
 
+async function callEmbeddingWithRetry(batch) {
+  const retryDelaysMs = [10000, 30000, 60000, 120000, 240000]; // 失败后等待时间（秒）：10, 30, 60, 120, 240
+  const maxAttempts = 6;
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await openai.embeddings.create({
+        model: embCfg.model,
+        input: batch,
+        encoding_format: 'float'
+      });
+    } catch (err) {
+      lastErr = err;
+      const errMsg = err.error || err.message || String(err);
+      if (attempt < maxAttempts) {
+        const delay = retryDelaysMs[attempt - 1];
+        console.warn(`[embed] Attempt ${attempt}/${maxAttempts} failed (${err.status || 'N/A'}): ${errMsg}. Retrying in ${delay / 1000}s...`);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+  console.error(`\n[embed] All ${maxAttempts} attempts failed. Aborting.`);
+  console.error(`[embed] Status: ${lastErr.status || 'N/A'}`);
+  console.error(`[embed] Error: ${lastErr.error || lastErr.message || String(lastErr)}`);
+  process.exit(1);
+}
+
 async function embedBatch(texts) {
   if (!texts || texts.length === 0) return [];
 
@@ -106,11 +133,7 @@ async function embedBatch(texts) {
 
   for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
     const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
-    const resp = await openai.embeddings.create({
-      model: embCfg.model,
-      input: batch,
-      encoding_format: 'float'
-    });
+    const resp = await callEmbeddingWithRetry(batch);
     allEmbeddings.push(...resp.data.map((d) => d.embedding));
   }
 
