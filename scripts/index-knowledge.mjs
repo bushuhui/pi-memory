@@ -30,7 +30,7 @@ const forceReindex = process.argv.includes("--force");
 const configPath = join(homedir(), ".openclaw", "openclaw.json");
 const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
-// Read config from plugin entry (memory-lancedb-pro)
+// Read config from plugin entry (pi-memory)
 const pluginConfig = config?.plugins?.entries?.["pi-memory"]?.config || {};
 const extraPaths = pluginConfig.knowledgePaths || [];
 const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/lancedb-pro";

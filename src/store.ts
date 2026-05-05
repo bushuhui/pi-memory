@@ -43,7 +43,7 @@ export const loadLanceDB = async (): Promise<typeof import("@lancedb/lancedb")> 
   try {
     return await lancedbImportPromise;
   } catch (err) {
-    throw new Error(`memory-lancedb-pro: failed to load LanceDB. ${String(err)}`, { cause: err });
+    throw new Error(`pi-memory: failed to load LanceDB. ${String(err)}`, { cause: err });
   }
 };
 

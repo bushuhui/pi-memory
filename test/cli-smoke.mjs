@@ -37,7 +37,7 @@ async function createSourceDb(sourceDbPath) {
 }
 
 async function runCliSmoke() {
-  const workDir = mkdtempSync(path.join(tmpdir(), "memory-lancedb-pro-smoke-"));
+  const workDir = mkdtempSync(path.join(tmpdir(), "pi-memory-smoke-"));
   const sourceDbPath = path.join(workDir, "source-db");
 
   await createSourceDb(sourceDbPath);

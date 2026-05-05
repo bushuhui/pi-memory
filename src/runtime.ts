@@ -2,7 +2,7 @@
  * Memory Runtime Provider
  * Implements MemoryPluginRuntime and MemorySearchManager for OpenClaw integration
  *
- * When slots.memory = "memory-lancedb-pro", this runtime becomes the active memory provider.
+ * When slots.memory = "pi-memory", this runtime becomes the active memory provider.
  */
 
 import type { OpenClawConfig } from "openclaw/plugin-sdk";
