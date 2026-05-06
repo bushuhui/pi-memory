@@ -59,6 +59,11 @@ const CHUNK_OVERLAP = 200;
 const TABLE_NAME = "knowledge";
 const forceReindex = process.argv.includes("--force");
 
+// Parse --path= arguments
+const pathArgs = process.argv
+  .filter((a) => a.startsWith("--path="))
+  .map((a) => a.split("=")[1]);
+
 // Read main config
 const configPath = join(homedir(), ".openclaw", "openclaw.json");
 const config = JSON.parse(readFileSync(configPath, "utf-8"));
@@ -66,8 +71,12 @@ const config = JSON.parse(readFileSync(configPath, "utf-8"));
 // Read config from plugin entry (pi-memory)
 const pluginConfig = config?.plugins?.entries?.["pi-memory"]?.config || {};
 const extraPaths = pluginConfig.knowledgePaths || [];
-const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/lancedb-pro";
+const dbPathConfig = pluginConfig.dbPath || "~/.openclaw/memory/pi-memory";
 const dbPath = join(homedir(), dbPathConfig.replace("~/", ""));
+
+// scopePaths: files to index + orphan cleanup boundary
+const scopePaths = (pathArgs.length > 0 ? pathArgs : extraPaths)
+  .map(p => p.replace(/\/+$/, "")); // normalize trailing slashes
 
 // Read embedding config from plugin config
 const embCfg = pluginConfig.embedding;
@@ -79,9 +88,16 @@ if (!embCfg) {
 
 const vectorDim = embCfg.dimensions || 1536;
 
+const _t = { start: Date.now(), last: Date.now() };
+function _mark(label) {
+  const now = Date.now();
+  console.log(`[time] ${label}: ${now - _t.last}ms (total: ${now - _t.start}ms)`);
+  _t.last = now;
+}
+
 console.log(`[index-knowledge] Starting indexer...`);
 console.log(`[index-knowledge] DB path: ${dbPath}`);
-console.log(`[index-knowledge] Knowledge paths: ${extraPaths.join(", ")}`);
+console.log(`[index-knowledge] Scope paths: ${scopePaths.join(", ") || "(none)"}`);
 console.log(`[index-knowledge] Embedding: ${embCfg.model} (dim=${vectorDim})`);
 console.log(`[index-knowledge] Force re-index: ${forceReindex}`);
 console.log("");
@@ -326,6 +342,7 @@ async function scanDirectory(dirPath) {
 // ============================================================================
 
 await loadFileMetadataCache();
+_mark("loadFileMetadataCache");
 
 let totalScanned = 0, totalIndexed = 0, totalSkipped = 0, totalErrors = 0;
 
@@ -334,7 +351,7 @@ const SCAN_CONCURRENCY = 100; // High concurrency for lightweight stat() calls
 // --- Phase 1: Scan ALL directories ---
 console.log("Phase 1: Scanning directories...");
 const allFiles = [];
-for (const rootPath of extraPaths) {
+for (const rootPath of scopePaths) {
   if (shuttingDown) break;
   const files = await scanDirectory(rootPath);
   totalScanned += files.length;
@@ -342,6 +359,7 @@ for (const rootPath of extraPaths) {
   console.log(`  ${rootPath}: ${files.length} files`);
 }
 console.log(`  Total: ${allFiles.length} files`);
+_mark("Phase 1 scan");
 
 // --- Phase 1.5: Pre-scan small/empty files to avoid repeated full reads ---
 // Files that are too short to produce chunks (< ~60 bytes) are detected here
@@ -366,6 +384,7 @@ for (const file of allFiles) {
   } catch { /* ignore inaccessible files */ }
 }
 console.log(`  Found ${emptyFileCount} empty files, added to cache`);
+_mark("Phase 1.5 empty pre-scan");
 
 // --- Phase 2: Parallel mtime check on ALL files ---
 console.log(`Phase 2: Checking mtime for ${allFiles.length} files (concurrency=${SCAN_CONCURRENCY})...`);
@@ -410,20 +429,21 @@ for (let i = 0; i < allFiles.length; i += SCAN_CONCURRENCY) {
   }
 }
 console.log(`\r  ${allFiles.length} files checked: ${changedFiles.length} changed, ${totalSkipped} unchanged${" ".repeat(40)}`);
+_mark("Phase 2 mtime check");
 
 // --- Phase 3: Process changed files in small batches ---
-// Each batch: read 5 files → chunk → delete old → embed → store
+// Each batch: read 50 files → chunk → delete old → embed → store
 // This keeps memory bounded and keeps the embed API busy from the start.
+const FILE_BATCH_SIZE = 50;
+
 if (changedFiles.length === 0) {
   console.log("Phase 3: No files need processing. Skipping.");
 } else {
-  console.log(`Phase 3: Processing ${changedFiles.length} changed files (file batch=5, embed batch=${EMBED_BATCH_SIZE})...`);
+  console.log(`Phase 3: Processing ${changedFiles.length} changed files (file batch=${FILE_BATCH_SIZE}, embed batch=${EMBED_BATCH_SIZE})...`);
 
   let batchSkipped = 0;
   let batchErrors = 0;
   let totalChunksEmbedded = 0;
-
-  const FILE_BATCH_SIZE = 5;
 
   for (let i = 0; i < changedFiles.length; i += FILE_BATCH_SIZE) {
     if (shuttingDown) {
@@ -497,10 +517,11 @@ if (changedFiles.length === 0) {
     }
 
     if (readyBatches.length > 0) {
-      // 2. Delete old chunks for ready files
-      for (const fb of readyBatches) {
-        await deleteByFilePath(fb.filePath);
-      }
+      // 2. Batch-delete old chunks for ready files (single SQL with IN clause)
+      const inList = readyBatches
+        .map((fb) => `'${fb.filePath.replace(/'/g, "''")}'`)
+        .join(', ');
+      await table.delete(`filePath IN (${inList})`);
 
       // 3. Embed chunks for this batch
       const batchChunks = [];
@@ -513,32 +534,41 @@ if (changedFiles.length === 0) {
       const embeddings = await embedBatch(batchChunks.map(c => c.text));
       totalChunksEmbedded += batchChunks.length;
 
-      // 4. Store results
+      // 4. Build all records, then write in a single table.add call
+      const allRecords = [];
       let embIdx = 0;
       for (const fb of readyBatches) {
         const fileEmbeddings = embeddings.slice(embIdx, embIdx + fb.chunks.length);
-        const records = fb.chunks.map((text, idx) => ({
-          id: randomUUID(),
-          text,
-          vector: fileEmbeddings[idx],
-          filePath: fb.filePath,
-          fileName: basename(fb.filePath),
-          fileType: extname(fb.filePath).slice(1),
-          chunkIndex: idx,
-          timestamp: Date.now(),
-          fileMtime: fb.mtimeSec,
-          fileHash: fb.contentHash,
-        }));
+        for (let idx = 0; idx < fb.chunks.length; idx++) {
+          allRecords.push({
+            id: randomUUID(),
+            text: fb.chunks[idx],
+            vector: fileEmbeddings[idx],
+            filePath: fb.filePath,
+            fileName: basename(fb.filePath),
+            fileType: extname(fb.filePath).slice(1),
+            chunkIndex: idx,
+            timestamp: Date.now(),
+            fileMtime: fb.mtimeSec,
+            fileHash: fb.contentHash,
+          });
+        }
+        embIdx += fb.chunks.length;
+      }
 
-        await table.add(records);
+      if (allRecords.length > 0) {
+        await table.add(allRecords);
+      }
+
+      // 5. Update metadata cache and counters
+      for (const fb of readyBatches) {
         fileMetadataCache.set(fb.filePath, { mtime: fb.mtimeSec, hash: fb.contentHash });
         totalIndexed++;
         maybeLogMemory(totalIndexed);
-        embIdx += fb.chunks.length;
       }
     }
 
-    // 5. Progress report every batch
+    // 6. Progress report every batch
     const processed = Math.min(i + FILE_BATCH_SIZE, changedFiles.length);
     console.log(`  [progress] ${processed}/${changedFiles.length} — indexed:${totalIndexed}, skipped:${batchSkipped}, errors:${batchErrors}, chunks:${totalChunksEmbedded}`);
   }
@@ -551,6 +581,7 @@ if (changedFiles.length === 0) {
   }
   console.log("");
 }
+_mark("Phase 3 processing");
 
 // ============================================================================
 // Orphan Cleanup — remove DB entries for deleted source files
@@ -559,8 +590,12 @@ if (changedFiles.length === 0) {
 // Skip orphan cleanup if we didn't complete a full scan (e.g. interrupted)
 let orphanDeleted = 0;
 if (!shuttingDown) {
-  console.log("Checking for orphaned entries (deleted source files)...");
+  console.log(`Checking for orphaned entries (scope: ${scopePaths.join(", ") || "none"})...`);
   const allDiskFiles = new Set(allFiles.map(f => f.path));
+
+  function isInScope(fp) {
+    return scopePaths.some(sp => fp === sp || fp.startsWith(sp + "/"));
+  }
 
   try {
     const dbFilePaths = new Set();
@@ -571,6 +606,8 @@ if (!shuttingDown) {
 
     for (const dbPath of dbFilePaths) {
       if (dbPath === "/placeholder") continue;
+      // Only clean orphans within scope; entries outside scope are untouched
+      if (!isInScope(dbPath)) continue;
       if (!allDiskFiles.has(dbPath)) {
         try {
           await deleteByFilePath(dbPath);
@@ -593,6 +630,7 @@ if (!shuttingDown) {
 } else {
   console.log("Skipping orphan cleanup (interrupted — scan was incomplete).");
 }
+_mark("orphan cleanup");
 
 const totalChunks = await table.countRows();
 console.log("");

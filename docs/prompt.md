@@ -32,3 +32,23 @@ HTTP server 和 MCP 的sse服务的端口可以共用一个
 scripts/index-knowledge.mjs 你仔细看一下这个程序。
 - 遍历知识库目录的时候，能跟着符号链接进入下一级目录吧
 - 你看一下 PI-LLM-Server 的API文档 /home/bushuhui/pi-lab/0_ai_agent/agents/pi-llm-server/doc/api.md 。你检查一下你们的程序，能否一次 embedding 调用，发送多段文字，让多个文字同时进行 embedding 计算 
+
+
+## 2026-05-06
+
+你仔细阅读一下 docs/lancedb.md ， 帮我在 scripts 目录写一个程序监控、优化 lancedb
+- 查看当前片段数量
+- 运行 `optimize()`
+
+
+
+需要检索的文件的目录在 配置文件： pi-memory.config.knowledgePaths
+const pluginConfig = config?.plugins?.entries?.["pi-memory"]?.config || {};
+const extraPaths = pluginConfig.knowledgePaths || []; 
+
+这里面 /home/a409/knowledge_base/research_projects 里面有特别多的文件，每次执行构建索引需要花非常多的时间。能否在程序增加一个命令行参数，单独对 某一个目录进行构建索引？
+另外，构建索引最后的步骤中，只删除这次构建索引的目录，例如 pi-memory.config.knowledgePaths 列的目录，或者是用户通过命令行输入的目录。其他不在构建索引的目录里面的删除的文件不进行删除索引操作
+你先不写代码，先把方案想清楚。
+
+
+
