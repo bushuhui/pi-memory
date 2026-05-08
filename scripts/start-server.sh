@@ -12,6 +12,8 @@ PID_FILE="$LOG_DIR/pi-memory-server.pid"
 # Build log filename with date
 LOG_FILE="$LOG_DIR/pi-memory-server_$(date '+%Y%m%d').log"
 
+source ~/.bashrc
+
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
