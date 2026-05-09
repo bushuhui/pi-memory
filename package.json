@@ -1,5 +1,5 @@
 {
-  "name": "pi-memeory",
+  "name": "pi-memory",
   "version": "1.2.0",
   "description": "OpenClaw enhanced LanceDB memory plugin with hybrid retrieval (Vector + BM25), cross-encoder rerank, multi-scope isolation, management CLI, and standalone HTTP/MCP server",
   "type": "module",

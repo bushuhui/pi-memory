@@ -30,8 +30,8 @@ pi-memory 当前是一个 OpenClaw 插件，所有能力（memory/knowledge 检�
 │  │           src/server.ts                   │  │
 │  │   统一 HTTP Server（单进程单端口）          │  │
 │  │                                           │  │
-│  │   REST API:   /health, /api/v1/*         │  │
-│  │   MCP SSE:    /sse                        │  │
+│  │   REST API:   /health, /api/*          │  │
+│  │   MCP:        /mcp (Streamable HTTP)     │  │
 │  └───────────────────────────────────────────┘  │
 │                                                  │
 │  scripts/pi-memory-server  (CLI 启动脚本)         │
@@ -43,7 +43,7 @@ pi-memory 当前是一个 OpenClaw 插件，所有能力（memory/knowledge 检�
   - 任意脚本/curl  →  HTTP API
 ```
 
-MCP SSE 和 REST API 共用同一个 HTTP 进程和端口。`/sse` 端点由 `@modelcontextprotocol/sdk` 的 `SSEServerTransport` 挂载，REST 端点由自写路由处理，互不干扰。
+MCP 和 REST API 共用同一个 HTTP 进程和端口。`/mcp` 端点由 `@modelcontextprotocol/sdk` 的 `StreamableHTTPServerTransport` 挂载，REST 端点由自写路由处理，互不干扰。
 
 ### 初始化流程
 
@@ -57,13 +57,13 @@ scripts/pi-memory-server
        5. 创建 KnowledgeStore (复用 src/knowledge-store.ts)
        6. 创建 KnowledgeIndexer (复用 src/knowledge-indexer.ts)
        7. 启动统一 HTTP Server
-          ├── 注册 REST API 路由 (/health, /api/v1/*)
-          └── 挂载 MCP SSE 端点 (/sse) — 默认开启
+          ├── 注册 REST API 路由 (/health, /api/*)
+          └── 挂载 MCP Streamable HTTP 端点 (/mcp) — 默认开启
 ```
 
 **关键决策**：
 - 不依赖 OpenClaw 运行时。所有组件通过 `server-bootstrap.ts` 直接实例化，与 OpenClaw 的 `index.ts` register 流程并行但独立
-- HTTP Server 和 MCP SSE **整合为同一进程同一端口**，无需分别管理
+- HTTP Server 和 MCP **整合为同一进程同一端口**，无需分别管理
 - 配置格式与 `openclaw.json` 中 `plugins.entries["pi-memory"].config` 完全一致，`server` 字段为扩展部分
 - 默认值（模型、端点、维度等）取自线上实际配置，而非 OpenAI 默认值
 
@@ -204,7 +204,7 @@ GET /health
 #### 4.2.2 知识库搜索
 
 ```
-POST /api/v1/knowledge/search
+POST /api/knowledge/search
 Content-Type: application/json
 Authorization: Bearer <api-key>  // 如果配置了 apiKey
 ```
@@ -249,7 +249,7 @@ Authorization: Bearer <api-key>  // 如果配置了 apiKey
 #### 4.2.3 记忆搜索
 
 ```
-POST /api/v1/memory/search
+POST /api/memory/search
 Content-Type: application/json
 ```
 
@@ -291,7 +291,7 @@ Content-Type: application/json
 #### 4.2.4 记忆存储
 
 ```
-POST /api/v1/memory/store
+POST /api/memory/store
 Content-Type: application/json
 ```
 
@@ -317,7 +317,7 @@ Content-Type: application/json
 #### 4.2.5 记忆读取（按 ID）
 
 ```
-GET /api/v1/memory/:id
+GET /api/memory/:id
 ```
 
 响应：
@@ -336,7 +336,7 @@ GET /api/v1/memory/:id
 #### 4.2.6 记忆删除
 
 ```
-DELETE /api/v1/memory/:id
+DELETE /api/memory/:id
 ```
 
 响应：
@@ -350,7 +350,7 @@ DELETE /api/v1/memory/:id
 #### 4.2.7 知识索引管理
 
 ```
-POST /api/v1/knowledge/index
+POST /api/knowledge/index
 ```
 
 请求体：
@@ -376,7 +376,7 @@ POST /api/v1/knowledge/index
 #### 4.2.8 记忆统计
 
 ```
-GET /api/v1/memory/stats?scope=global
+GET /api/memory/stats?scope=global
 ```
 
 响应：
@@ -400,7 +400,7 @@ GET /api/v1/memory/stats?scope=global
 #### 4.2.9 知识统计
 
 ```
-GET /api/v1/knowledge/stats
+GET /api/knowledge/stats
 ```
 
 响应：
@@ -418,7 +418,7 @@ GET /api/v1/knowledge/stats
 #### 4.2.10 统一搜索（同时搜索记忆+知识库）
 
 ```
-POST /api/v1/search
+POST /api/search
 Content-Type: application/json
 ```
 
@@ -466,7 +466,7 @@ HTTP 状态码：
 ### 4.4 鉴权
 
 如果配置了 `server.apiKey`：
-- 所有 `/api/v1/*` 端点要求 `Authorization: Bearer <api-key>` 请求头； 内部使用，如果没有提供 <api-key> 也能使用
+- 所有 `/api/*` 端点要求 `Authorization: Bearer <api-key>` 请求头； 内部使用，如果没有提供 <api-key> 也能使用
 - `/health` 端点不需要鉴权（用于容器健康检查）
 - API Key 比较使用恒定时间比较（防时序攻击）
 
@@ -685,7 +685,7 @@ import requests
 def pi_memory_knowledge_search(query: str, limit: int = 5) -> str:
     """调用 pi-memory 知识库搜索"""
     resp = requests.post(
-        "http://127.0.0.1:9873/api/v1/knowledge/search",
+        "http://127.0.0.1:9873/api/knowledge/search",
         json={"query": query, "limit": limit},
         timeout=30,
     )
@@ -751,7 +751,7 @@ Claude Code 启动时会自动连接 pi-memory SSE 端点，Agent 即可使用 `
 
 ### 10.3 日志
 
-- HTTP 访问日志：`[server] POST /api/v1/knowledge/search 200 45ms`
+- HTTP 访问日志：`[server] POST /api/knowledge/search 200 45ms`
 - 错误日志：stderr，包含堆栈
 - 不记录请求内容（隐私保护），仅记录路径和状态码
 
@@ -766,14 +766,14 @@ Claude Code 启动时会自动连接 pi-memory SSE 端点，Agent 即可使用 `
 3. **src/server-router.ts** — 轻量 HTTP 路由
 4. **src/server-response.ts** — 响应序列化
 5. **scripts/pi-memory-server** — CLI 启动脚本
-6. 实现 `/health` + `/api/v1/knowledge/search` + `/api/v1/memory/search`
+6. 实现 `/health` + `/api/knowledge/search` + `/api/memory/search`
 
 ### Phase 2：完整 API 覆盖
 
 7. **src/server-middleware.ts** — 鉴权、CORS
-8. `/api/v1/memory/store`、`/api/v1/memory/:id`、`/api/v1/memory/:id`（DELETE）
-9. `/api/v1/knowledge/index`、`/api/v1/memory/stats`、`/api/v1/knowledge/stats`
-10. `/api/v1/search`（统一搜索）
+8. `/api/memory/store`、`/api/memory/:id`、`/api/memory/:id`（DELETE）
+9. `/api/knowledge/index`、`/api/memory/stats`、`/api/knowledge/stats`
+10. `/api/search`（统一搜索）
 
 ### Phase 3：MCP SSE 集成
 
@@ -811,3 +811,17 @@ HTTP/MCP Server 和 OpenClaw 插件**可以同时运行**，共享同一个 Lanc
 ### 12.4 @modelcontextprotocol/sdk 兼容性
 
 该 SDK 要求 Node.js >= 18，pi-memory 当前运行环境需确认 Node 版本。OpenClaw 本身已要求 Node.js 18+，所以应该没问题。
+
+---
+
+## 13. 设计与实现差异
+
+本文档记录的是设计方案，实际实现与设计的差异如下：
+
+| 设计 | 实际实现 | 原因 |
+|------|---------|------|
+| API 路径 `/api/v1/*` | `/api/*` | 简化路径，无版本管理需求 |
+| MCP 传输: SSE (`/sse`) | Streamable HTTP (`/mcp`) | MCP SDK 更新，Streamable HTTP 是更新的协议标准 |
+| 统一搜索 `/api/v1/search` | 未实现 | 需求优先级较低，可后续添加 |
+| `memory_get` MCP 工具 | 已注册 | 通过 REST API `/api/memory/:id` 的 GET 方法实现 |
+
