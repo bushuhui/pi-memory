@@ -12,7 +12,9 @@ PID_FILE="$LOG_DIR/pi-memory-server.pid"
 # Build log filename with date
 LOG_FILE="$LOG_DIR/pi-memory-server_$(date '+%Y%m%d').log"
 
-source ~/.bashrc
+# Load nvm for non-interactive shell
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
