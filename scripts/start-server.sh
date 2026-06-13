@@ -12,14 +12,25 @@ PID_FILE="$LOG_DIR/pi-memory-server.pid"
 # Build log filename with date
 LOG_FILE="$LOG_DIR/pi-memory-server_$(date '+%Y%m%d').log"
 
-# Load nvm for non-interactive shell
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-
 # Ensure log directory exists
 mkdir -p "$LOG_DIR"
 
-cd $PROJECT_DIR
+# Load nvm for non-interactive shell (rc.local/systemd/cron may not set HOME)
+export HOME="${HOME:-$(getent passwd "$(whoami)" | cut -d: -f6)}"
+export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+    . "$NVM_DIR/nvm.sh"
+    # Ensure the active node is available in PATH for non-login shells
+    nvm use node >/dev/null 2>&1 || true
+fi
+
+# Verify node is available before starting
+if ! command -v node >/dev/null 2>&1; then
+    echo "[pi-memory-server] Error: node not found in PATH. Check nvm installation." >&2
+    exit 1
+fi
+
+cd "$PROJECT_DIR"
 
 start() {
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
