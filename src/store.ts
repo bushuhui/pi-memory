@@ -564,4 +564,19 @@ export class MemoryStore {
   get hasFtsSupport(): boolean {
     return this.ftsIndexCreated;
   }
+
+  /**
+   * Compact LanceDB table: merge small fragments, prune old versions.
+   */
+  async optimize(): Promise<void> {
+    await this.init();
+    if (!this.table) return;
+
+    try {
+      const olderThan = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      await this.table.optimize({ cleanupOlderThan: olderThan });
+    } catch (err) {
+      console.warn(`[memory-store] optimize failed: ${err}`);
+    }
+  }
 }

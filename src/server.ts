@@ -86,12 +86,18 @@ async function hybridKnowledgeSearch(
   limit: number,
 ): Promise<ScoredChunk[]> {
   const candidatePoolSize = Math.max(config.candidatePoolSize, limit * 3);
+  const t0 = Date.now();
+
   const queryVector = await embedder.embedQuery(query);
+  const t1 = Date.now();
 
   const [vectorResults, bm25Results] = await Promise.all([
     store.vectorSearch(queryVector, candidatePoolSize),
-    store.ftsSearch(query, candidatePoolSize),
+    store.ftsSearch(query, candidatePoolSize, true),
   ]);
+  const t2 = Date.now();
+
+  console.log(`[knowledge-search] embed=${t1 - t0}ms vector+fts=${t2 - t1}ms vec=${vectorResults.length} bm25=${bm25Results.length}`);
 
   const vectorMap = new Map<string, ReturnType<typeof vectorResults>[0] & { rank: number }>();
   vectorResults.forEach((r, i) => vectorMap.set(r.chunk.id, { ...r, rank: i + 1 }));
@@ -751,6 +757,14 @@ export async function startServer(components: ServerComponents): Promise<http.Se
       if (mcpConfig.enabled) {
         console.log(`[pi-memory-server] MCP StreamableHTTP: http://${httpConfig.host === "0.0.0.0" ? "localhost" : httpConfig.host}:${httpConfig.port}/mcp`);
       }
+
+      // Periodic LanceDB compaction (every 30 min) to prevent fragmentation
+      const optimizeInterval = setInterval(() => {
+        components.knowledgeStore.optimize().catch(() => {});
+        components.store.optimize().catch(() => {});
+      }, 30 * 60 * 1000);
+      server.on("close", () => clearInterval(optimizeInterval));
+
       resolve(server);
     });
 

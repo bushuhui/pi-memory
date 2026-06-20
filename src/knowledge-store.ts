@@ -36,6 +36,12 @@ export interface KnowledgeSearchResult {
 
 const TABLE_NAME = "knowledge";
 
+// Columns for select queries (excludes large vector field)
+const METADATA_COLUMNS = [
+  "id", "text", "filePath", "fileName", "fileType",
+  "chunkIndex", "timestamp", "fileMtime", "fileHash",
+];
+
 export class KnowledgeStore {
   private db: LanceDB.Connection | null = null;
   private table: LanceDB.Table | null = null;
@@ -114,6 +120,9 @@ export class KnowledgeStore {
         }
       }
     }
+
+    // Note: the IVF_PQ vector index is built by scripts/create-vector-index.mjs
+    // (run during a maintenance window — it blocks the event loop on large tables).
   }
 
   async addChunks(chunks: Omit<KnowledgeChunk, "id">[]): Promise<void> {
@@ -140,15 +149,17 @@ export class KnowledgeStore {
 
   async vectorSearch(
     queryVector: number[],
-    limit: number = 10
+    limit: number = 10,
+    excludeVector: boolean = false
   ): Promise<KnowledgeSearchResult[]> {
     await this.init();
     if (!this.table) throw new Error("Table not initialized");
 
-    const results = await this.table
-      .vectorSearch(queryVector)
-      .limit(limit)
-      .toArray();
+    let q = this.table.vectorSearch(queryVector).limit(limit);
+    if (excludeVector) {
+      q = q.select(METADATA_COLUMNS);
+    }
+    const results = await q.toArray();
 
     return results.map((r: any) => {
       // Convert L2 distance to 0-1 similarity score (same as MemoryStore)
@@ -159,7 +170,7 @@ export class KnowledgeStore {
         chunk: {
           id: r.id,
           text: r.text,
-          vector: r.vector,
+          vector: r.vector ?? [],
           filePath: r.filePath,
           fileName: r.fileName,
           fileType: r.fileType,
@@ -174,15 +185,16 @@ export class KnowledgeStore {
     });
   }
 
-  async ftsSearch(query: string, limit: number = 20): Promise<KnowledgeSearchResult[]> {
+  async ftsSearch(query: string, limit: number = 20, excludeVector: boolean = false): Promise<KnowledgeSearchResult[]> {
     await this.init();
     if (!this.table) throw new Error("Table not initialized");
 
     try {
-      const results = await this.table
-        .search(query)
-        .limit(limit)
-        .toArray();
+      let q = this.table.search(query).limit(limit);
+      if (excludeVector) {
+        q = (q as any).select(METADATA_COLUMNS);
+      }
+      const results = await q.toArray();
 
       return results.map((r: any, index: number) => {
         // LanceDB FTS _score is raw BM25 (unbounded). Normalize with sigmoid.
@@ -193,7 +205,7 @@ export class KnowledgeStore {
           chunk: {
             id: r.id,
             text: r.text,
-            vector: r.vector,
+            vector: r.vector ?? [],
             filePath: r.filePath,
             fileName: r.fileName,
             fileType: r.fileType,
@@ -262,6 +274,23 @@ export class KnowledgeStore {
     } catch (err) {
       console.warn(`[knowledge-store] getFileMetadata failed: ${err}`);
       return null;
+    }
+  }
+
+  /**
+   * Compact LanceDB table: merge small fragments, prune old versions, optimize indices.
+   * Should be called periodically to maintain query performance.
+   */
+  async optimize(): Promise<void> {
+    await this.init();
+    if (!this.table) return;
+
+    try {
+      const olderThan = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const stats = await this.table.optimize({ cleanupOlderThan: olderThan });
+      console.log(`[knowledge-store] optimize done: ${JSON.stringify(stats)}`);
+    } catch (err) {
+      console.warn(`[knowledge-store] optimize failed: ${err}`);
     }
   }
 }

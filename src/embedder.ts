@@ -176,6 +176,8 @@ export class Embedder {
     this.client = new OpenAI({
       apiKey: resolvedApiKey,
       ...(config.baseURL ? { baseURL: config.baseURL } : {}),
+      timeout: 10_000,  // 10s timeout to prevent indefinite blocking
+      maxRetries: 0,    // no retries on timeout — fail fast for interactive search
     });
 
     this.dimensions = getVectorDimensions(config.model, config.dimensions);
