@@ -47,10 +47,22 @@ export async function bootstrap(overrides?: Partial<ServerConfig>): Promise<Boot
     normalized: config.embedding.normalized,
   });
 
-  // 2. Test embedding connection
-  const embedTest = await embedder.test();
-  if (!embedTest.success) {
-    throw new Error(`Embedding test failed: ${embedTest.error}`);
+  // 2. Test embedding connection (with exponential backoff for slow-starting services)
+  // Wait times: 5s, 10s, 20s, 40s, 80s, 160s (total ~315s ≈ 5 minutes)
+  const maxRetries = 7;
+  const baseInterval = 5000; // 5s base; actual wait = baseInterval * 2^(attempt-1)
+  let embedTest: Awaited<ReturnType<Embedder["test"]>> | null = null;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    embedTest = await embedder.test();
+    if (embedTest.success) break;
+    if (attempt < maxRetries) {
+      const waitMs = baseInterval * Math.pow(2, attempt - 1);
+      console.log(`[bootstrap] Embedding not ready (attempt ${attempt}/${maxRetries}): ${embedTest.error}. Retrying in ${waitMs / 1000}s...`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  if (!embedTest?.success) {
+    throw new Error(`Embedding test failed after ${maxRetries} attempts: ${embedTest?.error}`);
   }
   console.log(`[bootstrap] Embedding OK (${embedTest.dimensions}d)`);
 
