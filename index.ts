@@ -337,6 +337,7 @@ const memoryLanceDBProPlugin = {
     const config = parsePluginConfig(api.pluginConfig);
 
     // Read extraPaths from main OpenClaw config (agents.defaults.memorySearch.extraPaths)
+    // Also check plugins.entries.pi-memory.config.knowledgePaths as fallback
     let knowledgePaths: string[] = [];
     try {
       const configPath = join(homedir(), ".openclaw", "openclaw.json");
@@ -344,6 +345,15 @@ const memoryLanceDBProPlugin = {
       const defaults = mainConfig?.agents?.defaults?.memorySearch;
       const rawPaths = [...(defaults?.extraPaths ?? [])].map((v: any) => String(v).trim()).filter(Boolean);
       knowledgePaths = Array.from(new Set(rawPaths));
+      
+      // Fallback: read from plugins.entries.pi-memory.config.knowledgePaths
+      if (knowledgePaths.length === 0) {
+        const pluginPaths = mainConfig?.plugins?.entries?.["pi-memory"]?.config?.knowledgePaths;
+        if (Array.isArray(pluginPaths)) {
+          knowledgePaths = pluginPaths.map((v: any) => String(v).trim()).filter(Boolean);
+          console.log(`[pi-memory] knowledgePaths from plugin config: ${JSON.stringify(knowledgePaths)}`);
+        }
+      }
     } catch (err) {
       console.log(`[knowledge] failed to read extraPaths from main config: ${err}`);
     }
