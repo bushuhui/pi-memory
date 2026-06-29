@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { connect } from "@lancedb/lancedb";
 import { randomUUID } from "node:crypto";
 import OpenAI from "openai";
+import { parseArgs } from "node:util";
 import { pid } from "node:process";
 
 // ============================================================================
@@ -57,12 +58,17 @@ const SUPPORTED_EXTENSIONS = [".md", ".txt", ".mdx"];
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
 const TABLE_NAME = "knowledge";
-const forceReindex = process.argv.includes("--force");
 
-// Parse --path= arguments
-const pathArgs = process.argv
-  .filter((a) => a.startsWith("--path="))
-  .map((a) => a.split("=")[1]);
+// Parse CLI arguments using node:util parseArgs
+const { values } = parseArgs({
+  options: {
+    path: { type: "string", multiple: true },
+    force: { type: "boolean", default: false },
+  },
+});
+
+const forceReindex = values.force;
+const pathArgs = values.path || [];
 
 // Read main config
 const configPath = join(homedir(), ".openclaw", "openclaw.json");
@@ -508,6 +514,8 @@ if (changedFiles.length === 0) {
           batchSkipped++;
         } else if (r.type === "ready") {
           readyBatches.push(r);
+          const processedCount = Math.min(i + readyBatches.length + batchSkipped + batchErrors, changedFiles.length);
+          console.log(`  [file ${processedCount}/${changedFiles.length}] ${r.filePath} — chunks: ${r.chunks.length}`);
         }
       } else {
         batchErrors++;
