@@ -66,7 +66,16 @@ export class KnowledgeStore {
 
   private async doInitialize(): Promise<void> {
     const lancedb = await loadLanceDB();
-    this.db = await lancedb.connect(this.dbPath);
+    
+    // Limit LanceDB cache to reduce memory usage
+    // Default is 6GB index + 1GB metadata; we use 1GB + 256MB
+    const session = new (lancedb as any).Session(
+      BigInt(1 * 1024 * 1024 * 1024),      // indexCacheSizeBytes: 1GB
+      BigInt(256 * 1024 * 1024)             // metadataCacheSizeBytes: 256MB
+    );
+    console.log(`[knowledge-store] LanceDB cache limited: index=1GB, metadata=256MB`);
+    
+    this.db = await lancedb.connect(this.dbPath, {}, session);
 
     const tableNames = await this.db.tableNames();
     if (tableNames.includes(TABLE_NAME)) {
