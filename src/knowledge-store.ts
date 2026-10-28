@@ -199,7 +199,10 @@ export class KnowledgeStore {
     if (!this.table) throw new Error("Table not initialized");
 
     try {
-      let q = this.table.search(query).limit(limit);
+      // Explicit FTS query. Without queryType LanceDB 0.26 defaults to vector
+      // search which requires an embedding function on the table (not defined
+      // for knowledge chunks), causing "No embedding functions are defined".
+      let q = this.table.search(query, "fts").limit(limit);
       if (excludeVector) {
         q = (q as any).select(METADATA_COLUMNS);
       }
@@ -295,7 +298,12 @@ export class KnowledgeStore {
     if (!this.table) return;
 
     try {
-      const olderThan = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // 2026-10-28: keep 30 days of old versions instead of 7. The gateway
+      // process holds long-lived table handles; aggressive prune (7d) deleted
+      // fragments those handles still referenced, causing lance `Not found`
+      // (5 recurrences: 8/31, 9/16, 9/30, 10/9, 10/28). Longer retention + 6h
+      // optimize interval (server.ts) reduce the window for stale handles.
+      const olderThan = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
       const stats = await this.table.optimize({ cleanupOlderThan: olderThan });
       console.log(`[knowledge-store] optimize done: ${JSON.stringify(stats)}`);
     } catch (err) {

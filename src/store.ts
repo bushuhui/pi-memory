@@ -582,7 +582,9 @@ export class MemoryStore {
     if (!this.table) return;
 
     try {
-      const olderThan = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      // 2026-10-28: keep 14 days of old versions instead of 7 (same rationale
+      // as knowledge-store.ts — stale gateway handles + aggressive prune).
+      const olderThan = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000);
       await this.table.optimize({ cleanupOlderThan: olderThan });
     } catch (err) {
       console.warn(`[memory-store] optimize failed: ${err}`);

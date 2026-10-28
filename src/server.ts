@@ -758,11 +758,14 @@ export async function startServer(components: ServerComponents): Promise<http.Se
         console.log(`[pi-memory-server] MCP StreamableHTTP: http://${httpConfig.host === "0.0.0.0" ? "localhost" : httpConfig.host}:${httpConfig.port}/mcp`);
       }
 
-      // Periodic LanceDB compaction (every 30 min) to prevent fragmentation
+      // Periodic LanceDB compaction (every 6h) to prevent fragmentation.
+      // 2026-10-28: was 30min; frequent optimize() + prune deleted old version
+      // fragments that long-lived gateway table handles still referenced,
+      // causing lance `Not found` errors (5 recurrences). Reduced frequency.
       const optimizeInterval = setInterval(() => {
         components.knowledgeStore.optimize().catch(() => {});
         components.store.optimize().catch(() => {});
-      }, 30 * 60 * 1000);
+      }, 6 * 60 * 60 * 1000);
       server.on("close", () => clearInterval(optimizeInterval));
 
       resolve(server);
